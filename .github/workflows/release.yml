@@ -14,12 +14,21 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      platform:
+        description: "Welke versie bouwen"
+        type: choice
+        options: [alle, windows, macos]
+        default: alle
 
 permissions:
   contents: write
 
 jobs:
+  # Bij een tag alleen als de repo-variabele MACOS_CI op "true" staat (en de secrets hierboven er zijn);
+  # anders komt de Mac-versie uit ./release.sh op je eigen Mac (ondertekend en genotariseerd).
   macos:
+    if: (github.event_name == 'push' && vars.MACOS_CI == 'true') || (github.event_name == 'workflow_dispatch' && inputs.platform != 'windows')
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +67,7 @@ jobs:
           files: dist/*.dmg
 
   windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform != 'macos'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
