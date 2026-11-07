@@ -357,3 +357,28 @@ pub fn metric_row(ui: &mut Ui, name: &str, value: f32, color: Color32) {
     progress(ui, value, 5.0, color);
     ui.add_space(4.0);
 }
+
+/// Aan/uit-schakelaar.
+pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
+    let size = vec2(46.0, 26.0);
+    let (rect, mut resp) = ui.allocate_exact_size(size, Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let t = ui.ctx().animate_bool(resp.id, *on);
+    let p = ui.painter();
+    let bg = if *on { SUCCESS } else { Color32::from_rgb(58, 64, 80) };
+    p.rect_filled(rect, CornerRadius::same(13), bg);
+    let x = egui::lerp((rect.left() + 13.0)..=(rect.right() - 13.0), t);
+    p.circle_filled(egui::pos2(x, rect.center().y), 10.0, Color32::WHITE);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Kleine statistiek: label boven, waarde eronder.
+pub fn mini_stat(ui: &mut Ui, label: &str, value: &str) {
+    ui.vertical(|ui| {
+        ui.label(caps(label));
+        ui.label(RichText::new(value).font(FontId::new(17.0, semibold())).color(TEXT));
+    });
+}

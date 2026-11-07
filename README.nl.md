@@ -35,8 +35,10 @@ in FM's trainingskalender, week na week.
 - **Training automatisch in FM.** *Zet training in FM* plant elke komende week rond je echte wedstrijden en
   schrijft de sessies in FM's eigen kalender. Het ritme komt uit de presets van Sports Interactive (herstel na
   een wedstrijd, Match Preparation de dag ervoor, conditie in de voorbereiding); de tactische sessies gaan naar je
-  zwakste gebieden. Wedstrijd- en reisdagen blijven van FM, en niets op of vóór vandaag wordt aangepast. Met
-  *Nieuwe weken automatisch inplannen* krijgt elke nieuwe week meteen jouw plan.
+  zwakste gebieden. Wedstrijd- en reisdagen blijven van FM, en niets op of vóór vandaag wordt aangepast. FM's
+  assistent plant elke week de komende 1–2 weken opnieuw in (en zodra wedstrijden veranderen); met *Training
+  automatisch bijhouden* controleert de app elke paar seconden en zet afwijkingen terug. Het logboek laat zien
+  wat FM wilde en wat er is teruggezet.
 - **Club en selectie.** Transfer- en loonbudget instellen, blessures genezen, schorsingen opheffen, moraal naar de
   top. Alles is ongedaan te maken en blijft pas bewaard als je in FM opslaat.
 - **Planning en export.** Week- en seizoensplan als HTML (printbaar), CSV en JSON, ook zonder module.

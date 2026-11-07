@@ -47,7 +47,9 @@ window, reads the labels with on-device OCR and measures all 17 pie gauges and 4
 fixtures and writes the sessions into FM's own calendar. The rhythm comes from Sports Interactive's own presets:
 recovery after a match, match preparation the day before, conditioning in pre-season. The tactical slots go to
 your weakest areas. Match and travel days are left to FM, and nothing on or before today is touched.
-With *Plan new weeks automatically*, every week FM adds to its calendar gets your plan straight away.
+FM's assistant re-plans the next one or two weeks every week (and whenever fixtures change), so
+*Keep training on plan automatically* checks every few seconds while the app is open and puts any change
+back. The activity log shows exactly what FM wanted and what was restored.
 
 **Club tools.** Set the transfer and wage budget, heal injuries, lift suspensions, and bring morale back to the
 top. Every change can be undone, and it only sticks once you save in FM.

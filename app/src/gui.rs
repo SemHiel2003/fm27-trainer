@@ -46,14 +46,19 @@ struct Settings {
     lang: Lang,
     rate: f32,
     capture_delay: bool,
+    #[serde(default = "yes")]
     auto_training: bool,
     planner: PlannerSettings,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: false, planner: PlannerSettings::default() }
+        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, planner: PlannerSettings::default() }
     }
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn settings_file() -> PathBuf {
@@ -238,6 +243,13 @@ impl App {
                 Ok((a, src)) => {
                     let when = chrono::Local::now().format("%d-%m %H:%M");
                     self.eff = a.to_effectiveness(&format!("{src} · {when}"));
+                    // spel-datum erbij, zodat de app weet hoe oud de meting in speltijd is
+                    if let Ok(v) = agent::request(json!({"cmd": "game_date"})) {
+                        let (y, d) = (v.get("year").and_then(|x| x.as_i64()), v.get("doy").and_then(|x| x.as_u64()));
+                        if let (Some(y), Some(d)) = (y, d) {
+                            self.eff.game_date = NaiveDate::from_yo_opt(y as i32, d as u32);
+                        }
+                    }
                     let _ = crate::save_effectiveness(&self.eff);
                     let msg = t!(format!("{} van 17 meters gelezen.", a.gauges.len()), format!("Read {} of 17 gauges.", a.gauges.len()));
                     self.set_status(msg, false);
@@ -490,14 +502,18 @@ impl App {
     // -------------------------------------------------------------------- training
 
     fn page_training(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        let can = agent::LIVE_SUPPORTED && self.live.connected && !self.live.busy();
+        let connected = agent::LIVE_SUPPORTED && self.live.connected;
+        let can = connected && !self.live.busy();
         let (mut view, mut write) = (false, false);
         theme::page_header(
             ui,
             "Training",
-            t!("Automatisch afgestemd op je zwakste gebieden, rechtstreeks in FM's kalender.", "Tuned to your weakest areas automatically, written straight into FM's calendar."),
+            t!(
+                "FM27 Trainer plant je training op je zwakste gebieden en houdt hem in FM's kalender vast.",
+                "FM27 Trainer plans your training on your weakest areas and keeps it in FM's calendar."
+            ),
             |ui| {
-                if theme::primary_button(ui, icon::LIGHTNING, t!("Zet training in FM", "Apply training in FM"), can).clicked() {
+                if theme::primary_button(ui, icon::LIGHTNING, t!("Zet training nu in FM", "Apply training now"), can).clicked() {
                     write = true;
                 }
                 if theme::button(ui, icon::EYE, t!("Bekijk plan", "Preview"), can).clicked() {
@@ -516,65 +532,162 @@ impl App {
         }
         let (m, e) = (self.live.train_status.clone(), self.live.train_error);
         self.status_line(ui, &m, e);
-        if !self.has_data() {
-            let msg = t!(
-                "Nog geen effectiveness uitgelezen; het plan gebruikt standaardwaarden. Lees eerst de Breakdown uit (Overzicht).",
-                "No effectiveness read yet; the plan uses defaults. Read the Breakdown first (Overview)."
-            );
-            self.status_line(ui, msg, true);
+
+        // ---- statusblok: automatisch bijhouden
+        let auto = self.settings.auto_training;
+        let accent = if auto && connected { theme::SUCCESS } else { theme::WARNING };
+        Frame::new()
+            .fill(theme::tint(accent, 0.10))
+            .stroke(Stroke::new(1.0, theme::tint(accent, 0.45)))
+            .corner_radius(CornerRadius::same(14))
+            .inner_margin(Margin::same(18))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(theme::ic(if auto { icon::CHECK_CIRCLE } else { icon::WARNING }).size(30.0).color(accent));
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(theme::h2(t!("Training automatisch bijhouden", "Keep training on plan automatically")));
+                            ui.add_space(8.0);
+                            if theme::toggle(ui, &mut self.settings.auto_training).changed() {
+                                self.save_settings();
+                            }
+                            ui.label(RichText::new(if auto { t!("AAN", "ON") } else { t!("UIT", "OFF") }).strong().color(accent));
+                        });
+                        let text = if !connected {
+                            t!(
+                                "Werkt zodra FM met de module draait (zie hieronder).",
+                                "Works once FM runs with the module (see below)."
+                            )
+                        } else if auto {
+                            t!(
+                                "FM's assistent plant elke week de komende 1–2 weken opnieuw in. FM27 Trainer controleert elke 8 seconden en zet afwijkingen terug naar jouw plan. Laat de app open terwijl je speelt.",
+                                "FM's assistant re-plans the next 1–2 weeks every week. FM27 Trainer checks every 8 seconds and puts any change back on your plan. Keep the app open while you play."
+                            )
+                        } else {
+                            t!(
+                                "Uit: FM overschrijft je training elke week met zijn eigen planning. Zet dit aan, of klik na elke paar speelweken op 'Zet training nu in FM'.",
+                                "Off: FM overwrites your training with its own plan every week. Turn this on, or click 'Apply training now' every few game weeks."
+                            )
+                        };
+                        ui.add(egui::Label::new(theme::dim(text)).wrap());
+                    });
+                });
+                if connected {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 36.0;
+                        let last = self.live.last_check.map(|t| t.format("%H:%M:%S").to_string()).unwrap_or_else(|| "—".into());
+                        theme::mini_stat(ui, t!("Laatste controle", "Last check"), &last);
+                        theme::mini_stat(ui, t!("Teruggezet (deze sessie)", "Restored (this session)"), &t!(format!("{} dagen", self.live.fixed_total), format!("{} days", self.live.fixed_total)));
+                        let d = self.live.training.as_ref().and_then(|o| o.today).map(i18n::date).unwrap_or_else(|| "—".into());
+                        theme::mini_stat(ui, t!("Spel-datum", "Game date"), &d);
+                    });
+                }
+            });
+        ui.add_space(14.0);
+
+        // ---- zo werkt het: meten → plannen → bijhouden
+        let today = self.live.training.as_ref().and_then(|o| o.today);
+        let age_weeks = match (self.eff.game_date, today) {
+            (Some(d), Some(t)) => Some((t - d).num_days() / 7),
+            _ => None,
+        };
+        let stale = !self.has_data() || age_weeks.is_none_or(|w| w >= 3);
+        let mut go_overview = false;
+        ui.columns(3, |cols| {
+            step_card(&mut cols[0], 1, icon::CAMERA, t!("Meten", "Measure"), |ui| {
+                let txt = if !self.has_data() {
+                    t!("Nog niet uitgelezen.", "Not read yet.").to_string()
+                } else {
+                    match age_weeks {
+                        Some(0) => t!("Uitgelezen deze week (speltijd).", "Read this week (game time).").to_string(),
+                        Some(w) => t!(format!("Uitgelezen {w} weken geleden (speltijd)."), format!("Read {w} weeks ago (game time).")),
+                        None => t!(format!("Uitgelezen: {}", self.eff.source), format!("Read: {}", self.eff.source)),
+                    }
+                };
+                ui.label(if stale { RichText::new(txt).color(theme::WARNING) } else { theme::dim(txt) });
+                ui.add(egui::Label::new(theme::faint(t!(
+                    "Open in FM de Breakdown en lees hem uit; doe dit elke 2–3 speelweken.",
+                    "Open the Breakdown in FM and read it; do this every 2–3 game weeks."
+                ))).wrap());
+                if theme::small_button(ui, t!("Naar Overzicht", "Go to Overview"), true).clicked() {
+                    go_overview = true;
+                }
+            });
+            step_card(&mut cols[1], 2, icon::TARGET, t!("Plannen", "Plan"), |ui| {
+                ui.label(theme::dim(t!("Extra aandacht voor:", "Extra focus on:")));
+                for (f, v) in self.eff.weakest().into_iter().filter(|(f, _)| f.is_tactical_area()).take(3) {
+                    theme::pill(ui, &format!("{} · {v:.0}", f.label()), theme::rgb(level_color(v)));
+                }
+                ui.add(egui::Label::new(theme::faint(t!(
+                    "Het ritme rond wedstrijden volgt SI's presets; de focus schuift per week mee.",
+                    "The rhythm around matches follows SI's presets; the focus shifts week by week."
+                ))).wrap());
+            });
+            step_card(&mut cols[2], 3, icon::SPARKLE, t!("Bijhouden", "Keep"), |ui| {
+                for l in [
+                    t!("Alleen dagen ná vandaag worden aangepast.", "Only days after today are changed."),
+                    t!("Wedstrijd- en reisdagen blijven van FM.", "Match and travel days stay with FM."),
+                    t!("Rustweken (vakantie) blijven van FM.", "Rest weeks (holidays) stay with FM."),
+                    t!("Opslaan in FM bewaart alles in je save.", "Saving in FM keeps it in your save."),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(theme::ic(icon::CHECK_CIRCLE).color(theme::SUCCESS));
+                        ui.add(egui::Label::new(theme::dim(l)).wrap());
+                    });
+                }
+            });
+        });
+        if go_overview {
+            self.page = Page::Overview;
         }
-        if !agent::LIVE_SUPPORTED || !self.live.connected {
+        ui.add_space(14.0);
+
+        if !connected {
             self.connect_card(ui, ctx);
             return;
         }
 
-        ui.columns(3, |cols| {
-            theme::card(&mut cols[0], |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(theme::ic(icon::TARGET).color(theme::ACCENT).size(16.0));
-                    ui.label(theme::caps("Focus"));
-                });
-                ui.add_space(4.0);
-                for (f, v) in self.eff.weakest().into_iter().filter(|(f, _)| f.is_tactical_area()).take(3) {
-                    theme::pill(ui, &format!("{} · {v:.0}", f.label()), theme::rgb(level_color(v)));
-                }
+        // ---- logboek
+        theme::card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::ic(icon::CALENDAR_DOTS).color(theme::INFO).size(16.0));
+                ui.label(theme::h2(t!("Logboek", "Activity")));
             });
-            theme::card(&mut cols[1], |ui| {
+            ui.add_space(4.0);
+            if self.live.log.is_empty() {
+                ui.label(theme::faint(t!(
+                    "Nog geen aanpassingen. Zodra FM een week anders inplant, zie je hier wat er is teruggezet.",
+                    "No changes yet. When FM re-plans a week, you'll see here what was put back."
+                )));
+            }
+            for e in self.live.log.iter().take(6) {
                 ui.horizontal(|ui| {
-                    ui.label(theme::ic(icon::CALENDAR).color(theme::INFO).size(16.0));
-                    ui.label(theme::caps(t!("Spel-datum", "Game date")));
+                    ui.label(theme::faint(e.at.format("%H:%M:%S").to_string()));
+                    theme::pill(ui, if e.auto { t!("automatisch", "automatic") } else { t!("handmatig", "manual") }, if e.auto { theme::SUCCESS } else { theme::ACCENT });
+                    ui.add(egui::Label::new(RichText::new(&e.text).color(theme::TEXT)).wrap());
                 });
-                let d = self.live.training.as_ref().and_then(|o| o.today).map(i18n::date).unwrap_or_else(|| "—".into());
-                ui.label(RichText::new(d).font(egui::FontId::new(20.0, theme::bold())));
-                ui.label(theme::faint(t!("Alleen dagen hierna worden aangepast", "Only days after this are changed")));
-            });
-            theme::card(&mut cols[2], |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(theme::ic(icon::SPARKLE).color(theme::SUCCESS).size(16.0));
-                    ui.label(theme::caps(t!("Automatisch", "Automatic")));
-                });
-                if ui.checkbox(&mut self.settings.auto_training, t!("Nieuwe weken automatisch inplannen", "Plan new weeks automatically")).changed() {
-                    self.save_settings();
-                }
-                ui.label(theme::faint(t!("Zolang de app open is (FM houdt ~4 weken vooruit bij)", "While the app is open (FM keeps ~4 weeks ahead)")));
-            });
+            }
         });
         ui.add_space(14.0);
 
         let Some(o) = self.live.training.clone() else {
-            theme::card(ui, |ui| {
-                ui.label(theme::dim(t!("Klik op 'Bekijk plan' om de komende weken te zien.", "Click 'Preview' to see the coming weeks.")));
-            });
             if !self.live.busy() {
                 self.live.training(ctx, &self.eff, &self.settings.planner, false, false);
             }
             return;
         };
+        ui.horizontal(|ui| {
+            ui.label(theme::h2(t!("Komende weken", "Coming weeks")));
+            ui.add_space(10.0);
+            legend(ui);
+        });
+        ui.add_space(6.0);
         for w in &o.weeks {
-            week_card(ui, w, o.today);
+            week_card(ui, w, o.today, &self.live.fm_had);
             ui.add_space(10.0);
         }
-        legend(ui);
     }
 
     // -------------------------------------------------------------------- planning
@@ -1095,19 +1208,46 @@ fn chip(ui: &mut Ui, name: &str, highlight: bool, faded: bool) {
     theme::session_chip(ui, &chip_name(name), col, highlight).on_hover_text(name);
 }
 
-fn week_card(ui: &mut Ui, w: &live_training::WeekPreview, today: Option<NaiveDate>) {
+fn step_card(ui: &mut Ui, n: u8, icon_s: &str, title: &str, body: impl FnOnce(&mut Ui)) {
+    theme::card(ui, |ui| {
+        ui.horizontal(|ui| {
+            Frame::new().fill(theme::ACCENT_SOFT).corner_radius(CornerRadius::same(20)).inner_margin(Margin::symmetric(8, 2)).show(ui, |ui| {
+                ui.label(RichText::new(n.to_string()).color(theme::ACCENT).strong());
+            });
+            ui.label(theme::ic(icon_s).color(theme::ACCENT).size(16.0));
+            ui.label(theme::h2(title));
+        });
+        ui.add_space(4.0);
+        body(ui);
+    });
+}
+
+fn codes_text(c: &[u16; 3]) -> String {
+    c.iter().map(|x| chip_name(session_by_code(*x).unwrap_or("?"))).collect::<Vec<_>>().join(" · ")
+}
+
+fn week_card(ui: &mut Ui, w: &live_training::WeekPreview, today: Option<NaiveDate>, fm_had: &std::collections::HashMap<NaiveDate, [u16; 3]>) {
     theme::card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(theme::h2(t!(format!("Week van {}", i18n::date_short(w.start)), format!("Week of {}", i18n::date_short(w.start)))));
+            if w.rest {
+                theme::pill(ui, t!("Rustweek: blijft van FM", "Rest week: kept from FM"), theme::WARNING);
+                return;
+            }
             theme::pill(ui, &t!(format!("{} wedstrijd(en)", w.matches), format!("{} match(es)", w.matches)), theme::DANGER);
             theme::pill(ui, &w.focus, theme::ACCENT);
-            let changed = (0..7).filter(|d| w.current[*d] != w.planned[*d]).count();
+            let pending = (0..7).filter(|d| w.current[*d] != w.planned[*d]).count();
             if w.written > 0 {
-                theme::pill(ui, &t!(format!("{} dagen gezet", w.written), format!("{} days applied", w.written)), theme::SUCCESS);
-            } else if changed > 0 {
-                theme::pill(ui, &t!(format!("{changed} dagen wijzigen"), format!("{changed} days change")), theme::SUCCESS);
+                theme::pill(ui, &t!(format!("{} dagen teruggezet", w.written), format!("{} days restored", w.written)), theme::SUCCESS);
+            } else if pending > 0 {
+                theme::pill(ui, &t!(format!("{pending} dagen wijken af van je plan"), format!("{pending} days differ from your plan")), theme::WARNING);
+            } else {
+                theme::pill(ui, t!("volgens plan", "on plan"), theme::SUCCESS);
             }
         });
+        if w.rest {
+            return;
+        }
         ui.add_space(8.0);
         ui.columns(7, |cols| {
             for d in 0..7 {
@@ -1116,10 +1256,19 @@ fn week_card(ui: &mut Ui, w: &live_training::WeekPreview, today: Option<NaiveDat
                 let past = today.is_some_and(|t| date <= t);
                 ui.label(theme::caps(i18n::weekday_short(d)));
                 ui.label(theme::faint(i18n::date_short(date)));
-                let changed = w.current[d] != w.planned[d];
+                // wat FM wilde: nu afwijkend (wordt aangepast) of eerder teruggezet
+                let differs = w.current[d] != w.planned[d];
+                let was = if differs { Some(w.current[d]) } else { fm_had.get(&date).copied().filter(|h| *h != w.planned[d]) };
                 for code in w.planned[d] {
                     let name = session_by_code(code).unwrap_or("?");
-                    chip(ui, name, changed, past || !w.editable[d]);
+                    chip(ui, name, was.is_some() && !past, past || !w.editable[d]);
+                }
+                if let Some(h) = was.filter(|_| !past && w.editable[d]) {
+                    ui.add(egui::Label::new(RichText::new(format!("FM: {}", codes_text(&h))).size(10.5).color(theme::TEXT_FAINT).strikethrough()).truncate())
+                        .on_hover_text(t!(
+                            format!("FM had ingepland: {}", codes_text(&h)),
+                            format!("FM had planned: {}", codes_text(&h))
+                        ));
                 }
             }
         });
@@ -1142,6 +1291,7 @@ fn plan_grid(ui: &mut Ui, p: &WeekPlan) {
 fn legend(ui: &mut Ui) {
     use crate::model::Category::*;
     ui.horizontal_wrapped(|ui| {
+        ui.label(theme::faint(t!("Omlijnd = door FM27 Trainer gezet · doorgestreept = wat FM wilde ·", "Outlined = set by FM27 Trainer · struck through = what FM wanted ·")));
         for c in [TacticalUnderstanding, MatchPreparation, FootballingDevelopment, PhysicalRecovery, ExtraCurricular, Fixed] {
             theme::status_dot(ui, theme::rgb(c.color()));
             ui.label(theme::faint(c.label()));

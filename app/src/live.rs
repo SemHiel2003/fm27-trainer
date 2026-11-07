@@ -1,10 +1,10 @@
 //! Toestand van de verbinding met FM27 (via de module): club, selectie en training.
 //! Alle opdrachten lopen in de achtergrond; de UI leest alleen deze toestand.
 
-use chrono::NaiveDate;
+use chrono::{Duration, NaiveDate};
 use eframe::egui;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -22,8 +22,23 @@ struct Snapshot {
     error: bool,
 }
 
+/// Regel in het logboek van de trainingspagina.
+#[derive(Clone)]
+pub struct LogEntry {
+    pub at: chrono::DateTime<chrono::Local>,
+    pub text: String,
+    pub auto: bool,
+}
+
 pub struct LiveState {
     pub connected: bool,
+    /// Wat er de laatste keer gebeurde met de training (nieuwste eerst).
+    pub log: Vec<LogEntry>,
+    pub last_check: Option<chrono::DateTime<chrono::Local>>,
+    /// Dagen die deze sessie zijn (terug)gezet.
+    pub fixed_total: usize,
+    /// Per dag: wat FM had ingepland voordat de app het terugzette.
+    pub fm_had: HashMap<NaiveDate, [u16; 3]>,
     pub club: Option<Value>,
     pub squad: Vec<Value>,
     pub training: Option<Outcome>,
@@ -34,17 +49,19 @@ pub struct LiveState {
     pub transfer_input: String,
     pub wage_input: String,
     rx: Option<mpsc::Receiver<Snapshot>>,
-    train_rx: Option<mpsc::Receiver<(bool, Result<Outcome, String>)>>,
-    applied: HashSet<NaiveDate>,
+    train_rx: Option<mpsc::Receiver<(bool, bool, Result<Outcome, String>)>>,
     last_auto: Option<Instant>,
     last_poll: Option<Instant>,
-    eff_seen: String,
 }
 
 impl Default for LiveState {
     fn default() -> Self {
         LiveState {
             connected: false,
+            log: Vec::new(),
+            last_check: None,
+            fixed_total: 0,
+            fm_had: HashMap::new(),
             club: None,
             squad: Vec::new(),
             training: None,
@@ -56,10 +73,8 @@ impl Default for LiveState {
             wage_input: String::new(),
             rx: None,
             train_rx: None,
-            applied: HashSet::new(),
             last_auto: None,
             last_poll: None,
-            eff_seen: String::new(),
         }
     }
 }
@@ -151,21 +166,28 @@ impl LiveState {
     }
 
     pub fn training(&mut self, ctx: &egui::Context, eff: &Effectiveness, settings: &PlannerSettings, write: bool, only_new: bool) {
+        self.training_job(ctx, eff, settings, write, only_new, false);
+    }
+
+    fn training_job(&mut self, ctx: &egui::Context, eff: &Effectiveness, settings: &PlannerSettings, write: bool, only_new: bool, auto: bool) {
         if self.train_rx.is_some() {
             return;
         }
         let (tx, rx) = mpsc::channel();
         let (eff, settings) = (eff.clone(), settings.clone());
-        let skip = if only_new { self.applied.clone() } else { HashSet::new() };
+        let _ = only_new;
+        let skip: HashSet<NaiveDate> = HashSet::new();
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let r = live_training::run(&eff, &settings, write, &skip).map_err(|e| format!("{e:#}"));
-            let _ = tx.send((write, r));
+            let _ = tx.send((write, auto, r));
             ctx2.request_repaint();
         });
         self.train_rx = Some(rx);
-        self.train_status = if write { t!("Training wordt in FM gezet…", "Writing training into FM…").into() } else { t!("Plan wordt gemaakt…", "Building plan…").into() };
-        self.train_error = false;
+        if !auto {
+            self.train_status = if write { t!("Training wordt in FM gezet…", "Writing training into FM…").into() } else { t!("Plan wordt gemaakt…", "Building plan…").into() };
+            self.train_error = false;
+        }
     }
 
     /// Elke frame: resultaten ophalen, automatisch verbinden en (optioneel) automatisch plannen.
@@ -188,23 +210,42 @@ impl LiveState {
             }
         }
         if let Some(rx) = &self.train_rx {
-            if let Ok((wrote, r)) = rx.try_recv() {
+            if let Ok((wrote, auto, r)) = rx.try_recv() {
                 self.train_rx = None;
+                self.last_check = Some(chrono::Local::now());
                 match r {
                     Ok(o) => {
-                        let weeks: Vec<String> = o.weeks.iter().filter(|w| w.written > 0).map(|w| crate::i18n::date_short(w.start)).collect();
-                        self.train_status = if !wrote {
-                            t!("Plan klaar. Groen = wordt aangepast.", "Plan ready. Green = will change.").into()
-                        } else if weeks.is_empty() {
-                            t!("Alles staat al volgens plan.", "Everything already follows the plan.").into()
-                        } else {
-                            t!(
-                                format!("{} dagen aangepast (weken van {}).", o.written_days, weeks.join(", ")),
-                                format!("{} days updated (weeks of {}).", o.written_days, weeks.join(", "))
-                            )
-                        };
                         if wrote {
-                            self.applied.extend(o.weeks.iter().map(|w| w.start));
+                            // per week: wat FM had en wat er is teruggezet
+                            for w in o.weeks.iter().filter(|w| w.written > 0) {
+                                for d in 0..7 {
+                                    if w.editable[d] && w.current[d] != w.planned[d] {
+                                        self.fm_had.insert(w.start + Duration::days(d as i64), w.current[d]);
+                                    }
+                                }
+                                let date = crate::i18n::date_short(w.start);
+                                let text = if auto {
+                                    t!(
+                                        format!("Week van {date}: {} dagen teruggezet naar je plan (FM had de week opnieuw ingepland).", w.written),
+                                        format!("Week of {date}: {} days put back on plan (FM had re-planned the week).", w.written)
+                                    )
+                                } else {
+                                    t!(format!("Week van {date}: {} dagen in FM gezet.", w.written), format!("Week of {date}: {} days written into FM.", w.written))
+                                };
+                                self.log.insert(0, LogEntry { at: chrono::Local::now(), text, auto });
+                            }
+                            self.log.truncate(40);
+                            self.fixed_total += o.written_days;
+                        }
+                        if !auto {
+                            self.train_status = if !wrote {
+                                t!("Plan klaar. Groen = wordt aangepast.", "Plan ready. Green = will change.").into()
+                            } else if o.written_days == 0 {
+                                t!("Alles staat al volgens plan.", "Everything already follows the plan.").into()
+                            } else {
+                                t!(format!("{} dagen in FM gezet.", o.written_days), format!("{} days written into FM.", o.written_days))
+                            };
+                            self.train_error = false;
                         }
                         self.training = Some(o);
                     }
@@ -225,13 +266,11 @@ impl LiveState {
             self.refresh(ctx, "", None);
         }
         // nieuwe effectiveness → komende weken opnieuw plannen
-        if self.eff_seen != eff.source {
-            self.eff_seen = eff.source.clone();
-            self.applied.clear();
-        }
-        if auto && self.connected && !self.busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 45) {
+        // automatische modus: alle komende weken volgens plan houden. FM bouwt een week opnieuw op als
+        // de wedstrijden erin veranderen (loting, verplaatsing); dat zetten we hier weer recht.
+        if auto && self.connected && !self.busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 8) {
             self.last_auto = Some(Instant::now());
-            self.training(ctx, eff, settings, true, true);
+            self.training_job(ctx, eff, settings, true, false, true);
         }
     }
 }

@@ -369,6 +369,9 @@ pub struct Effectiveness {
     pub factors: Vec<(Factor, f32)>,
     pub components: Vec<(Component, f32)>,
     pub source: String,
+    /// Spel-datum waarop de Breakdown is uitgelezen (als FM met de module draaide).
+    #[serde(default)]
+    pub game_date: Option<chrono::NaiveDate>,
 }
 
 impl Default for Effectiveness {
@@ -377,6 +380,7 @@ impl Default for Effectiveness {
             factors: Factor::ALL.iter().map(|f| (*f, 50.0)).collect(),
             components: Component::ALL.iter().map(|c| (*c, 50.0)).collect(),
             source: String::new(),
+            game_date: None,
         }
     }
 }
