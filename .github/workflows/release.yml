@@ -1,0 +1,79 @@
+# Bouwt FM27 Trainer voor macOS (universeel, ondertekend + genotariseerd) en Windows.
+# Start bij een tag als v0.2.0, of met de hand (Actions → release → Run workflow).
+#
+# Secrets voor macOS-ondertekening (Settings → Secrets and variables → Actions):
+#   MACOS_CERT_P12        base64 van je "Developer ID Application"-certificaat (.p12)
+#   MACOS_CERT_PASSWORD   wachtwoord van die .p12
+#   APPLE_ID              je Apple ID (e-mail)
+#   APPLE_TEAM_ID         je Team ID (10 tekens)
+#   APPLE_APP_PASSWORD    app-specifiek wachtwoord (appleid.apple.com → Inloggen en beveiliging)
+# Zonder deze secrets bouwt de workflow een ad-hoc ondertekende versie.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Certificaat in tijdelijke sleutelhanger
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        if: env.MACOS_CERT_P12 != ''
+        run: |
+          KC="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p ci "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p ci "$KC"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+      - name: Notarisatie-profiel
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        if: env.APPLE_ID != ''
+        run: xcrun notarytool store-credentials fm27-notary --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+      - run: ./release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FM27-Trainer-macOS
+          path: dist/*.dmg
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/*.dmg
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p fm27-trainer
+      - name: Inpakken
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/fm27-trainer.exe "dist/FM27 Trainer.exe"
+          Compress-Archive -Path "dist/FM27 Trainer.exe" -DestinationPath "dist/FM27-Trainer-Windows.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FM27-Trainer-Windows
+          path: dist/FM27-Trainer-Windows.zip
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/FM27-Trainer-Windows.zip

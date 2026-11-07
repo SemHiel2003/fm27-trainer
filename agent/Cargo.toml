@@ -1,0 +1,16 @@
+[package]
+name = "fm27-agent"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/SemHiel2003/fm27-trainer"
+description = "Module die met FM27 meelaadt: leest en schrijft (op verzoek) clubbudget, blessures, moraal en training"
+
+[lib]
+name = "fm27_agent"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
