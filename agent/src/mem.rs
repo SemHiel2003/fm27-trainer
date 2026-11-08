@@ -58,9 +58,6 @@ pub fn u16_at(addr: u64) -> Option<u16> {
     let mut b = [0u8; 2];
     read_into(addr, &mut b).then(|| u16::from_le_bytes(b))
 }
-pub fn i16_at(addr: u64) -> Option<i16> {
-    u16_at(addr).map(|v| v as i16)
-}
 pub fn u32_at(addr: u64) -> Option<u32> {
     let mut b = [0u8; 4];
     read_into(addr, &mut b).then(|| u32::from_le_bytes(b))

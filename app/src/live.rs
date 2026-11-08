@@ -23,6 +23,30 @@ struct Snapshot {
     untested: Option<bool>,
 }
 
+/// Wat de verkooppagina bijhoudt.
+#[derive(Default)]
+pub struct SellState {
+    pub player: Option<u32>,
+    pub query: String,
+    /// de zoekopdracht waarvoor `clubs` geldt
+    pub searched: String,
+    pub clubs: Vec<Value>,
+    pub club: Option<(u32, String)>,
+    pub fee_input: String,
+    pub wage_input: String,
+    /// uitkomst van de controle, met de (speler, club, som, salaris) waarvoor hij geldt
+    pub plan: Option<(Value, (u32, u32, i64, Option<i64>))>,
+    pub status: String,
+    pub error: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Aux {
+    Clubs,
+    Plan((u32, u32, i64, Option<i64>)),
+    Sale,
+}
+
 /// Regel in het logboek van de trainingspagina.
 #[derive(Clone)]
 pub struct LogEntry {
@@ -53,6 +77,8 @@ pub struct LiveState {
     pub allow_untested: bool,
     /// De build van FM is niet getest: de module staat op alleen lezen (tenzij toegestaan).
     pub untested_build: bool,
+    pub sell: SellState,
+    aux_rx: Option<mpsc::Receiver<(Aux, Result<Value, String>)>>,
     rx: Option<mpsc::Receiver<Snapshot>>,
     train_rx: Option<mpsc::Receiver<(bool, bool, Result<Outcome, String>)>>,
     last_auto: Option<Instant>,
@@ -78,6 +104,8 @@ impl Default for LiveState {
             wage_input: String::new(),
             allow_untested: false,
             untested_build: false,
+            sell: SellState::default(),
+            aux_rx: None,
             rx: None,
             train_rx: None,
             last_auto: None,
@@ -98,6 +126,45 @@ fn short_result(v: &Value) -> String {
 impl LiveState {
     pub fn busy(&self) -> bool {
         self.rx.is_some() || self.train_rx.is_some()
+    }
+
+    /// Loopt er een zoek-, controle- of verkoopopdracht?
+    pub fn sell_busy(&self) -> bool {
+        self.aux_rx.is_some()
+    }
+
+    fn aux(&mut self, ctx: &egui::Context, kind: Aux, req: Value) {
+        if self.aux_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send((kind, agent::request(req).map_err(|e| format!("{e:#}"))));
+            ctx2.request_repaint();
+        });
+        self.aux_rx = Some(rx);
+    }
+
+    /// Clubs zoeken op naam.
+    pub fn search_clubs(&mut self, ctx: &egui::Context) {
+        let q = self.sell.query.trim().to_string();
+        self.sell.searched = q.clone();
+        self.aux(ctx, Aux::Clubs, json!({"cmd": "clubs", "query": q, "limit": 12}));
+    }
+
+    /// Controleren (er wordt niets geschreven).
+    pub fn plan_sale(&mut self, ctx: &egui::Context, uid: u32, club: u32, fee: i64, wage: Option<i64>) {
+        self.sell.plan = None;
+        self.sell.status = t!("Controleren…", "Checking…").into();
+        self.sell.error = false;
+        self.aux(ctx, Aux::Plan((uid, club, fee, wage)), json!({"cmd": "sell", "uid": uid, "club": club, "fee": fee, "wage": wage, "dry_run": true}));
+    }
+
+    pub fn sell_now(&mut self, ctx: &egui::Context, uid: u32, club: u32, fee: i64, wage: Option<i64>) {
+        self.sell.status = t!("Verkopen…", "Selling…").into();
+        self.sell.error = false;
+        self.aux(ctx, Aux::Sale, json!({"cmd": "sell", "uid": uid, "club": club, "fee": fee, "wage": wage}));
     }
 
     pub fn club_name(&self) -> Option<String> {
@@ -222,6 +289,34 @@ impl LiveState {
                 if !s.message.is_empty() || was != self.connected {
                     self.status = if s.message.is_empty() { t!("Verbonden met FM27.", "Connected to FM27.").into() } else { s.message };
                     self.status_error = s.error;
+                }
+            }
+        }
+        if let Some(rx) = &self.aux_rx {
+            if let Ok((kind, r)) = rx.try_recv() {
+                self.aux_rx = None;
+                match (kind, r) {
+                    (Aux::Clubs, Ok(Value::Array(a))) => self.sell.clubs = a,
+                    (Aux::Clubs, Ok(_)) => self.sell.clubs.clear(),
+                    (Aux::Plan(key), Ok(v)) => {
+                        self.sell.status.clear();
+                        self.sell.plan = Some((v, key));
+                    }
+                    (Aux::Sale, Ok(v)) => {
+                        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("?").to_string();
+                        self.sell.status = t!(
+                            format!("{} is verkocht aan {}. Klopt er iets niet? Gebruik Ongedaan maken voordat je opslaat.", s("player"), s("to")),
+                            format!("{} has been sold to {}. Something wrong? Use Undo before you save.", s("player"), s("to"))
+                        );
+                        self.sell.error = false;
+                        self.sell.plan = None;
+                        self.sell.player = None;
+                        self.refresh(ctx, "", None);
+                    }
+                    (_, Err(e)) => {
+                        self.sell.status = e;
+                        self.sell.error = true;
+                    }
                 }
             }
         }

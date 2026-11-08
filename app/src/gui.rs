@@ -20,10 +20,18 @@ use crate::theme::{self, icon};
 use crate::vision;
 
 pub fn run() -> Result<()> {
+    // testhulp: FM27_WINDOW=1320x1400 voor hogere schermafbeeldingen
+    let size = std::env::var("FM27_WINDOW")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some([w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?])
+        })
+        .unwrap_or([1320.0, 880.0]);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FM27 Trainer")
-            .with_inner_size([1320.0, 880.0])
+            .with_inner_size(size)
             .with_min_inner_size([1040.0, 660.0])
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/icon_256.png")).unwrap_or_default()),
         ..Default::default()
@@ -81,6 +89,7 @@ enum Page {
     Planning,
     Club,
     Squad,
+    Sell,
     Settings,
 }
 
@@ -140,6 +149,7 @@ impl App {
             "planning" => Page::Planning,
             "club" => Page::Club,
             "squad" => Page::Squad,
+            "sell" => Page::Sell,
             "settings" => Page::Settings,
             _ => Page::Overview,
         };
@@ -291,6 +301,7 @@ impl App {
                     (Page::Planning, icon::CALENDAR_DOTS, "Planning"),
                     (Page::Club, icon::BANK, "Club"),
                     (Page::Squad, icon::USERS_THREE, t!("Selectie", "Squad")),
+                    (Page::Sell, icon::HANDSHAKE, t!("Verkopen", "Sell")),
                     (Page::Settings, icon::GEAR_SIX, t!("Instellingen", "Settings")),
                 ];
                 for (p, ic, label) in items {
@@ -746,7 +757,9 @@ impl App {
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if theme::primary_button(ui, icon::SPARKLE, t!("Maak weekplan", "Build week plan"), true).clicked() {
+                // bij een testopname (FM27_SNAPSHOT) meteen een plan laten zien
+                let auto = self.week_plan.is_none() && std::env::var("FM27_SNAPSHOT").is_ok();
+                if theme::primary_button(ui, icon::SPARKLE, t!("Maak weekplan", "Build week plan"), true).clicked() || auto {
                     let start = NaiveDate::parse_from_str(self.week_start.trim(), "%Y-%m-%d")
                         .map(planner::monday_of)
                         .unwrap_or_else(|_| planner::monday_of(chrono::Local::now().date_naive()));
@@ -998,6 +1011,7 @@ impl App {
         let injured = self.live.squad.iter().filter(|p| p.get("injuries").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty())).count();
         let banned = self.live.squad.iter().filter(|p| p.get("bans").and_then(|v| v.as_u64()).unwrap_or(0) > 0).count();
         let mut action: Option<(String, Value)> = None;
+        let mut sell: Option<u32> = None;
         let n = self.live.squad.len();
         let subtitle = t!(format!("{n} spelers · {injured} geblesseerd · {banned} geschorst"), format!("{n} players · {injured} injured · {banned} suspended"));
         theme::page_header(ui, t!("Selectie", "Squad"), &subtitle, |ui| {
@@ -1063,6 +1077,10 @@ impl App {
                         if (m < 20 || unhappy) && theme::small_button(ui, t!("Inspireer", "Inspire"), !busy).clicked() {
                             action = Some((t!("moraal", "morale").into(), json!({"cmd": "inspire", "uids": [uid], "morale": 20, "clear_unhappiness": true})));
                         }
+                        let coach = p.get("player_coach").and_then(|v| v.as_bool()).unwrap_or(false);
+                        if !coach && theme::small_button(ui, t!("Verkoop", "Sell"), !busy).clicked() {
+                            sell = Some(uid as u32);
+                        }
                     });
                     ui.end_row();
                 }
@@ -1070,6 +1088,249 @@ impl App {
         });
         if let Some((l, r)) = action {
             self.live.refresh(ctx, &l, Some(r));
+        }
+        if let Some(uid) = sell {
+            self.start_sale(uid);
+        }
+    }
+
+    /// Naar de verkooppagina met deze speler gekozen; de vraagprijs begint bij zijn waarde.
+    fn start_sale(&mut self, uid: u32) {
+        let value = self.live.squad.iter().find(|p| p.get("uid").and_then(|v| v.as_u64()) == Some(uid as u64)).and_then(|p| p.get("value")).and_then(|v| v.as_i64()).unwrap_or(0);
+        self.live.sell.player = Some(uid);
+        self.live.sell.plan = None;
+        self.live.sell.status.clear();
+        self.live.sell.fee_input = format!("{:.1}", value as f64 * self.settings.rate as f64 / 1e6);
+        self.page = Page::Sell;
+    }
+
+    // -------------------------------------------------------------------- verkopen
+
+    fn page_sell(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        let busy = self.live.busy() || self.live.sell_busy();
+        let connected = self.live.connected;
+        let rate = self.settings.rate as f64;
+        let mut undo = false;
+        theme::page_header(
+            ui,
+            t!("Spelers verkopen", "Sell players"),
+            t!(
+                "Verkoop een speler direct aan een club naar keuze. De transfersom wordt meteen geboekt.",
+                "Sell a player straight to a club of your choice. The fee is booked at once."
+            ),
+            |ui| {
+                if theme::button(ui, icon::ARROW_COUNTER_CLOCKWISE, t!("Ongedaan maken", "Undo"), connected && !busy).clicked() {
+                    undo = true;
+                }
+            },
+        );
+        if undo {
+            self.live.sell.plan = None;
+            self.live.refresh(ctx, t!("ongedaan maken", "undo"), Some(json!({"cmd": "undo"})));
+        }
+        let (m, e) = (self.live.status.clone(), self.live.status_error);
+        if !m.is_empty() && (e || undo) {
+            self.status_line(ui, &m, e);
+        }
+        let (m, e) = (self.live.sell.status.clone(), self.live.sell.error);
+        self.status_line(ui, &m, e);
+        if !connected {
+            self.connect_card(ui, ctx);
+            return;
+        }
+
+        let eur = |pounds: i64| format!("€ {}", money((pounds as f64 * rate) as i64));
+        let squad = self.live.squad.clone();
+        let chosen = self.live.sell.player.and_then(|uid| squad.iter().find(|p| p.get("uid").and_then(|v| v.as_u64()) == Some(uid as u64)).cloned());
+        let mut pick: Option<u32> = None;
+        let mut search = false;
+        let mut check: Option<(u32, u32, i64, Option<i64>)> = None;
+        let mut confirm: Option<(u32, u32, i64, Option<i64>)> = None;
+
+        ui.columns(2, |cols| {
+            // 1. speler
+            theme::card(&mut cols[0], |ui| {
+                ui.label(theme::h2(t!("1 · Speler", "1 · Player")));
+                ui.label(theme::faint(t!("Kies wie je wilt verkopen.", "Choose who to sell.")));
+                ui.add_space(6.0);
+                ScrollArea::vertical().id_salt("sell_players").max_height(430.0).show(ui, |ui| {
+                    let mut sorted = squad.clone();
+                    sorted.sort_by_key(|p| std::cmp::Reverse(p.get("value").and_then(|v| v.as_i64()).unwrap_or(0)));
+                    for p in &sorted {
+                        let uid = p.get("uid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        let coach = p.get("player_coach").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let value = p.get("value").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let until = p.get("contract_ends").and_then(|d| d.get("year")).and_then(|y| y.as_u64());
+                        let selected = self.live.sell.player == Some(uid);
+                        ui.horizontal(|ui| {
+                            let label = if coach { format!("{name} · {}", t!("speler-trainer", "player-coach")) } else { name.to_string() };
+                            let r = ui.add_enabled(!coach, egui::SelectableLabel::new(selected, RichText::new(label).size(14.0)));
+                            if r.clicked() {
+                                pick = Some(uid);
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if let Some(y) = until {
+                                    ui.label(theme::faint(format!("{} {y}", t!("tot", "until"))));
+                                }
+                                ui.label(RichText::new(eur(value)).color(theme::TEXT));
+                                if p.get("listed").and_then(|v| v.as_u64()).unwrap_or(0) & 1 == 1 {
+                                    theme::pill(ui, t!("transferlijst", "listed"), theme::WARNING);
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+
+            // 2. koper en 3. bedrag
+            let ui = &mut cols[1];
+            theme::card(ui, |ui| {
+                ui.label(theme::h2(t!("2 · Koper", "2 · Buyer")));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let r = ui.add(egui::TextEdit::singleline(&mut self.live.sell.query).hint_text(t!("Zoek een club, bijv. AC Milan", "Search a club, e.g. AC Milan")).desired_width(260.0));
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        search = true;
+                    }
+                    if theme::small_button(ui, t!("Zoek", "Search"), !busy && self.live.sell.query.trim().len() >= 2).clicked() {
+                        search = true;
+                    }
+                });
+                // zoeken terwijl je typt
+                let q = self.live.sell.query.trim().to_string();
+                if q.len() >= 3 && q != self.live.sell.searched && !self.live.sell_busy() {
+                    search = true;
+                }
+                ui.add_space(4.0);
+                let clubs = self.live.sell.clubs.clone();
+                for c in clubs.iter().take(8) {
+                    let uid = c.get("uid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                    let selected = self.live.sell.club.as_ref().is_some_and(|(u, _)| *u == uid);
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::SelectableLabel::new(selected, RichText::new(&name).size(14.0))).clicked() {
+                            self.live.sell.club = Some((uid, name.clone()));
+                            self.live.sell.plan = None;
+                        }
+                        if c.get("women").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            theme::pill(ui, t!("vrouwen", "women"), theme::INFO);
+                        }
+                    });
+                }
+                if clubs.is_empty() && !self.live.sell.searched.is_empty() && !self.live.sell_busy() {
+                    ui.label(theme::faint(t!("Geen clubs gevonden.", "No clubs found.")));
+                }
+            });
+            ui.add_space(12.0);
+            theme::card(ui, |ui| {
+                ui.label(theme::h2(t!("3 · Bedrag", "3 · Fee")));
+                ui.add_space(4.0);
+                let value = chosen.as_ref().and_then(|p| p.get("value")).and_then(|v| v.as_i64()).unwrap_or(0);
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.live.sell.fee_input).hint_text("10").desired_width(90.0));
+                    ui.label(t!("mln €", "M €"));
+                    for (label, f) in [(t!("waarde", "value"), 1.0), ("×1.5", 1.5), ("×2", 2.0), ("×3", 3.0)] {
+                        if theme::small_button(ui, label, value > 0).clicked() {
+                            self.live.sell.fee_input = format!("{:.1}", value as f64 * f * rate / 1e6);
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(t!("Nieuw salaris", "New wage"));
+                    ui.add(egui::TextEdit::singleline(&mut self.live.sell.wage_input).hint_text(t!("blijft", "unchanged")).desired_width(90.0));
+                    ui.label("k € p/w");
+                });
+                let fee = self.live.sell.fee_input.replace(',', ".").trim().parse::<f64>().ok().map(|m| (m * 1e6 / rate).round() as i64);
+                let wage = self.live.sell.wage_input.replace(',', ".").trim().parse::<f64>().ok().map(|k| (k * 1e3 / rate).round() as i64);
+                let key = match (self.live.sell.player, &self.live.sell.club, fee) {
+                    (Some(p), Some((c, _)), Some(f)) if f >= 0 => Some((p, *c, f, wage)),
+                    _ => None,
+                };
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if theme::button(ui, icon::MAGNIFYING_GLASS, t!("Controleer", "Check"), key.is_some() && !busy).clicked() {
+                        check = key;
+                    }
+                    let ready = self.live.sell.plan.as_ref().is_some_and(|(v, k)| Some(*k) == key && v.get("allowed").and_then(|a| a.as_bool()) == Some(true));
+                    let label = match (&chosen, &self.live.sell.club) {
+                        (Some(p), Some((_, c))) => t!(
+                            format!("Verkoop {} aan {}", p.get("name").and_then(|v| v.as_str()).unwrap_or("?"), c),
+                            format!("Sell {} to {}", p.get("name").and_then(|v| v.as_str()).unwrap_or("?"), c)
+                        ),
+                        _ => t!("Verkoop", "Sell").to_string(),
+                    };
+                    if theme::primary_button(ui, icon::HANDSHAKE, &label, ready && !busy).clicked() {
+                        confirm = key;
+                    }
+                    if self.live.sell_busy() {
+                        ui.spinner();
+                    }
+                });
+                if let Some((v, k)) = &self.live.sell.plan {
+                    if Some(*k) == key {
+                        ui.add_space(8.0);
+                        let s = |n: &str| v.get(n).and_then(|x| x.as_str()).unwrap_or("?").to_string();
+                        let i = |n: &str| v.get(n).and_then(|x| x.as_i64()).unwrap_or(0);
+                        let b = |n: &str| v.get(n).and_then(|x| x.as_bool()).unwrap_or(false);
+                        let mut lines = vec![t!(
+                            format!("{} gaat naar {} voor {}.", s("player"), s("to"), eur(i("fee"))),
+                            format!("{} moves to {} for {}.", s("player"), s("to"), eur(i("fee")))
+                        )];
+                        lines.push(if b("buyer_pays") {
+                            t!(format!("{} betaalt uit saldo en transferbudget.", s("to")), format!("{} pays from its balance and transfer budget.", s("to")))
+                        } else {
+                            t!(format!("{} heeft geen volledige financiën in je save: alleen jij krijgt het geld.", s("to")), format!("{} has no full finances in your save: only you receive the money.", s("to")))
+                        });
+                        lines.push(t!(format!("Jouw saldo wordt {}.", eur(i("balance_after"))), format!("Your balance becomes {}.", eur(i("balance_after")))));
+                        if i("selections") > 0 {
+                            lines.push(t!(format!("Zijn plek in {} opstelling(en) wordt leeg.", i("selections")), format!("His place in {} selection(s) is emptied.", i("selections"))));
+                        }
+                        if b("was_captain") {
+                            lines.push(t!("Hij was aanvoerder: de band is vrij voor iemand anders.", "He was captain: the armband is free for someone else.").into());
+                        }
+                        if !b("allowed") {
+                            lines.push(t!("Deze FM-versie is niet getest: sta aanpassen eerst toe in Instellingen.", "This FM build is untested: allow changes in Settings first.").into());
+                        }
+                        for l in lines {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(theme::ic(icon::CHECK_CIRCLE).color(theme::SUCCESS));
+                                ui.label(l);
+                            });
+                        }
+                    }
+                }
+            });
+        });
+        ui.add_space(12.0);
+        theme::card(ui, |ui| {
+            ui.label(theme::h2(t!("Goed om te weten", "Good to know")));
+            ui.add_space(4.0);
+            for l in [
+                t!("Dit is een directe verkoop, geen bod: FM zet de transfer niet in het nieuws of de transferhistorie.", "This is a direct sale, not an offer: FM does not put the transfer in the news or the transfer history."),
+                t!("De speler krijgt bij de koper hetzelfde contract (of het nieuwe salaris), vanaf vandaag, zonder rugnummer.", "The player keeps his contract at the buyer (or the new wage), from today, without a squad number."),
+                t!("Ongedaan maken zet alles terug zolang je nog niet verder hebt gespeeld. Maak eerst een backup en sla pas op als alles klopt.", "Undo puts everything back as long as you have not played on. Back up first and only save when everything is right."),
+                t!("Speler-trainers en gehuurde spelers kunnen (nog) niet worden verkocht.", "Player-coaches and loaned players cannot be sold (yet)."),
+            ] {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(theme::ic(icon::INFO).color(theme::INFO));
+                    ui.label(theme::dim(l));
+                });
+            }
+        });
+
+        if let Some(uid) = pick {
+            self.start_sale(uid);
+        }
+        if search {
+            self.live.search_clubs(ctx);
+        }
+        if let Some((p, c, f, w)) = check {
+            self.live.plan_sale(ctx, p, c, f, w);
+        }
+        if let Some((p, c, f, w)) = confirm {
+            self.live.sell_now(ctx, p, c, f, w);
         }
     }
 
@@ -1206,6 +1467,7 @@ impl eframe::App for App {
                         Page::Planning => self.page_planning(ui),
                         Page::Club => self.page_club(ui, ctx),
                         Page::Squad => self.page_squad(ui, ctx),
+                        Page::Sell => self.page_sell(ui, ctx),
                         Page::Settings => self.page_settings(ui),
                     }
                     ui.add_space(20.0);

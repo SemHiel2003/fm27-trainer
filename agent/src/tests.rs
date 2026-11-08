@@ -451,3 +451,337 @@ fn itanium_names() {
     assert_eq!(rtti::decorated("db", "HUMAN_NON_PLAYER"), vec!["N2db16HUMAN_NON_PLAYERE".to_string()]);
     assert_eq!(rtti::demangle("N2db16HUMAN_NON_PLAYERE"), "db::HUMAN_NON_PLAYER");
 }
+
+// ---- spelers verkopen -------------------------------------------------------------------------
+
+/// Zet een klasse met RTTI in het gesimuleerde image zoals de compiler van het platform dat doet,
+/// en geeft de vtable. `base` is het begin van het image; de secties komen erbij.
+fn fake_class(abi: Abi, base: u64, ns: &str, class: &str) -> u64 {
+    match abi {
+        Abi::Itanium => {
+            let name = format!("N{}{}{}{}E", ns.len(), ns, class.len(), class);
+            let mut text = Heap::new(base + 0x10_0000, 0x1000);
+            let t = text.alloc(name.len() + 2);
+            text.put(t + 1, name.as_bytes());
+            let mut data = Heap::new(base + 0x20_0000, 0x1000);
+            let ti = data.alloc(16);
+            data.w64(ti, 0x1234_5670); // vtable van __class_type_info: doet hier niet ter zake
+            data.w64(ti + 8, t + 1);
+            let vt_block = data.alloc(48);
+            data.w64(vt_block, 0); // offset-to-top
+            data.w64(vt_block + 8, ti);
+            data.w64(vt_block + 16, 0xAAAA_0000);
+            let vt = vt_block + 16;
+            with(|s| {
+                let img = s.images.iter_mut().find(|i| i.start == base).unwrap();
+                img.segments.push(mem::Segment { name: "__TEXT".into(), start: text.start, end: text.start + 0x1000 });
+                img.segments.push(mem::Segment { name: "__DATA_CONST".into(), start: data.start, end: data.start + 0x1000 });
+            });
+            text.install(false);
+            data.install(false);
+            vt
+        }
+        Abi::Msvc => {
+            let name = format!(".?AV{class}@{ns}@@");
+            let mut data = Heap::new(base + 0x10_0000, 0x1000);
+            let td = data.alloc(16 + name.len() + 1);
+            data.w64(td, 0x7FF0_0000_1000); // vftable van type_info
+            data.put(td + 16, name.as_bytes());
+            let mut rdata = Heap::new(base + 0x20_0000, 0x1000);
+            let col = rdata.alloc(24);
+            rdata.w32(col, 1);
+            rdata.w32(col + 12, (td - base) as u32);
+            rdata.w32(col + 20, (col - base) as u32);
+            let vt_block = rdata.alloc(32);
+            rdata.w64(vt_block, col);
+            rdata.w64(vt_block + 8, 0x7FF0_0000_2000);
+            with(|s| {
+                let img = s.images.iter_mut().find(|i| i.start == base).unwrap();
+                img.segments.push(mem::Segment { name: ".data".into(), start: data.start, end: data.start + 0x1000 });
+                img.segments.push(mem::Segment { name: ".rdata".into(), start: rdata.start, end: rdata.start + 0x1000 });
+            });
+            data.install(false);
+            rdata.install(false);
+            vt_block + 8
+        }
+    }
+}
+
+struct Market {
+    finance: u64,
+    senior: u64,
+    u21: u64,
+    wijndal: u64,
+    wijndal_contract: u64,
+    milan: u64,
+    milan_finance: u64,
+    our_selection: u64,
+    national_selection: u64,
+}
+
+/// Ajax (de menselijke manager) met Wijndal (aanvoerder, ook in de U21-lijst), twee andere spelers
+/// en een speler-trainer; AC Milan met een selectie die nog ruimte heeft; een club met een volle
+/// selectie; AC Milan Women; en de opstellingen van Ajax en van een nationaal team.
+fn build_market(abi: Abi, l: &Layout, base: u64, staff_rva: u64, clubs_rva: u64, date_rva: Option<u64>) -> Market {
+    let mut h = Heap::new(0x2_0000_0000, 1 << 20);
+    let mut statics = Heap::new(base + (staff_rva & !0xFFF), 0x2000);
+    statics.next = 0x2000;
+
+    let finance = |h: &mut Heap, balance: i32, budget: i32| {
+        let f = h.alloc(0x900);
+        h.put(f + 0x0C, &balance.to_le_bytes());
+        h.put(f + 0x7C4, &budget.to_le_bytes());
+        h.put(f + 0x808, &900_000i32.to_le_bytes());
+        h.put(f + 0x814, &850_000i32.to_le_bytes());
+        h.put(f + 0x864, &45.0f32.to_le_bytes());
+        h.w8(f + 0x8A9, 15);
+        f
+    };
+    let club = |h: &mut Heap, uid: u32, name: &str, fin: u64, women: u8| {
+        let c = h.alloc(0x160);
+        h.w32(c + 0x0C, uid);
+        let n = h.fm_string(name);
+        h.w64(c + 0xC0, n);
+        h.w64(c + 0x150, fin);
+        h.w8(c + 0xB9, women);
+        c
+    };
+    let team = |h: &mut Heap, club: u64| {
+        let t = h.alloc(0xB0);
+        h.w64(t + 0x30, club);
+        t
+    };
+    // een speler (shift 0x0 of de speler-trainer-shift) bij `team`, met contract
+    let player = |h: &mut Heap, team: u64, uid: u32, person: u32, name: &str, shift: u64| {
+        let p = h.alloc(0x600);
+        h.w64(p + l.p_team, team);
+        h.w8(p + l.p_morale, 12);
+        let n = h.name(name);
+        h.w64(p + l.p_common + shift, n);
+        h.w32(p + l.p_uid + shift, uid);
+        h.w32(p + l.p_identity + shift + 8, person);
+        h.put(p + l.p_value, &8_000_000i32.to_le_bytes());
+        let c = h.alloc(0xC8);
+        h.w64(p + l.p_contract + shift, c);
+        h.w64(c + 0x08, p + l.p_identity + shift);
+        h.w64(c + 0x10, team);
+        h.w64(c + 0x18, team);
+        h.put(c + 0x20, &20_000i32.to_le_bytes());
+        h.w8(c + 0x26, 1);
+        h.put(c + 0x44, &date_bytes(2024, 183 | 0x4000));
+        h.put(c + 0x48, &date_bytes(2029, 181));
+        h.put(c + 0x4C, &date_bytes(2024, 183 | 0x4000));
+        h.w8(c + 0x57, 0b01);
+        h.w8(c + 0x5D, 5);
+        (p, c)
+    };
+
+    // Ajax
+    let fin = finance(&mut h, 25_000_000, 12_000_000);
+    let ajax = club(&mut h, 992, "AFC Ajax", fin, 0);
+    let senior = team(&mut h, ajax);
+    let u21 = team(&mut h, ajax);
+    h.list(ajax + 0x18, &[senior, u21]);
+    let (wijndal, wc) = player(&mut h, senior, 37058888, 5001, "Owen Wijndal", 0);
+    let (p3, _) = player(&mut h, senior, 2, 5003, "Davy Klaassen", 0);
+    let (p4, _) = player(&mut h, senior, 3, 5004, "Daley Blind", 0);
+    let (coach, _) = player(&mut h, senior, 4, 5002, "Jordi Cruijff", l.player_coach_shift);
+    h.list(senior + 0x38, &[p3, wijndal, p4, coach]);
+    h.list(u21 + 0x38, &[wijndal]);
+    h.w64(senior + 0x88, wijndal + l.p_identity); // aanvoerder
+    // de menselijke manager
+    let human = h.alloc(0x600);
+    let hc = h.alloc(0x80);
+    h.w64(human + l.staff_contract + l.human_shift, hc);
+    h.w64(hc + 0x08, human + l.staff_identity + l.human_shift);
+    h.w64(hc + 0x10, senior);
+    let staff = h.alloc(8);
+    h.w64(staff, human);
+    statics.w64(base + staff_rva, staff);
+    statics.w64(base + staff_rva + 8, staff + 8);
+    let sched = h.alloc(0xA0);
+    h.put(sched + 0x94, &date_bytes(2027, 76));
+    h.w64(senior + 0xA0, sched);
+    if let Some(rva) = date_rva {
+        let mut d = Heap::new(base + (rva & !0xFFF), 0x1000);
+        d.next = 0x1000;
+        d.put(base + rva, &date_bytes(2027, 76));
+        d.install(false);
+    }
+
+    // AC Milan: selectie van 3 in een blok van 144 bytes (ruimte voor 18)
+    let milan_fin = finance(&mut h, 100_000_000, 30_000_000);
+    let milan = club(&mut h, 45, "AC Milan", milan_fin, 0);
+    let ms = team(&mut h, milan);
+    h.list(milan + 0x18, &[ms]);
+    let block = h.alloc(144);
+    for i in 0..3u64 {
+        let (q, _) = player(&mut h, ms, 100 + i as u32, 6000 + i as u32, "Milan player", 0);
+        h.w64(block + i * 8, q);
+    }
+    h.w64(ms + 0x38, block);
+    h.w64(ms + 0x40, block + 24);
+    h.w64(ms + 0x48, block + 24);
+    // een club met een volle selectie: na de capaciteit staat iets anders
+    let full_fin = finance(&mut h, 1_000_000, 0);
+    let full = club(&mut h, 77, "Volle Club", full_fin, 0);
+    let fs = team(&mut h, full);
+    h.list(full + 0x18, &[fs]);
+    let fblock = h.alloc(144);
+    let (q, _) = player(&mut h, fs, 200, 7000, "Full player", 0);
+    h.w64(fblock, q);
+    h.w64(fblock + 8, 0xDEAD_BEEF_0000);
+    h.w64(fs + 0x38, fblock);
+    h.w64(fs + 0x40, fblock + 8);
+    h.w64(fs + 0x48, fblock + 8);
+    let inter = club(&mut h, 46, "FC Internazionale Milano", 0, 0);
+    let women = club(&mut h, 47, "AC Milan Women", 0, 1);
+    let wt = team(&mut h, women);
+    h.list(women + 0x18, &[wt]);
+    h.list(wt + 0x38, &[]);
+    let clubs = h.alloc(5 * 8);
+    for (i, c) in [ajax, milan, full, inter, women].iter().enumerate() {
+        h.w64(clubs + i as u64 * 8, *c);
+    }
+    statics.w64(base + clubs_rva, clubs);
+    statics.w64(base + clubs_rva + 8, clubs + 40);
+
+    // opstellingen: die van Ajax, die van een nationaal team, en een vrijgegeven blok
+    let vt = fake_class(abi, base, "simatch", "PREPARED_TACTICS_CREATOR_ARRAY");
+    let selection = |h: &mut Heap, ids: &[u32], sound: bool| {
+        let o = h.alloc(0x90);
+        h.w64(o, vt);
+        if sound {
+            let a = h.alloc(8);
+            h.w64(o + 8, a);
+            h.w64(o + 16, a + 8);
+            h.w64(o + 24, a + 8);
+        }
+        for i in 0..26u64 {
+            h.w32(o + 0x28 + i * 4, *ids.get(i as usize).unwrap_or(&u32::MAX));
+        }
+        o
+    };
+    let our_selection = selection(&mut h, &[5003, 5001, 5004, 5002], true);
+    let national_selection = selection(&mut h, &[9001, 5001, 9002, 9003, 9004, 9005], true);
+    let _freed = selection(&mut h, &[5001, 5003, 5004], false);
+
+    h.install(true);
+    statics.install(false);
+    Market { finance: fin, senior, u21, wijndal, wijndal_contract: wc, milan, milan_finance: milan_fin, our_selection, national_selection }
+}
+
+fn snapshot() -> Vec<Vec<u8>> {
+    with(|s| s.blocks.iter().map(|b| b.data.clone()).collect())
+}
+
+fn list_items(hdr: u64) -> Vec<u64> {
+    let (b, e) = (mem::u64_at(hdr).unwrap(), mem::u64_at(hdr + 8).unwrap());
+    (b..e).step_by(8).map(|a| mem::u64_at(a).unwrap()).collect()
+}
+
+fn run_market(l: &'static Layout, m: &Market) {
+    // clubs zoeken
+    let hits = call(json!({"cmd": "clubs", "query": "milan"})).unwrap();
+    let names: Vec<&str> = hits.as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["AC Milan", "AC Milan Women", "FC Internazionale Milano"]);
+    assert_eq!(hits[0]["uid"], 45);
+    assert_eq!(hits[1]["women"], true);
+
+    // de selectie toont waarde, salaris, contract en transferlijst
+    let squad = call(json!({"cmd": "squad"})).unwrap();
+    let w = squad.as_array().unwrap().iter().find(|p| p["uid"] == 37058888).unwrap();
+    assert_eq!(w["value"], 8_000_000);
+    assert_eq!(w["wage"], 20_000);
+    assert_eq!(w["listed"], 1);
+    assert_eq!(w["contract_ends"], json!({"year": 2029, "doy": 181}));
+    assert_eq!(squad.as_array().unwrap().iter().find(|p| p["uid"] == 4).unwrap()["player_coach"], true);
+
+    // eerst alleen controleren: er verandert niets
+    let before = snapshot();
+    let plan = call(json!({"cmd": "sell", "uid": 37058888, "club": 45, "fee": 10_000_000, "dry_run": true})).unwrap();
+    assert_eq!(plan["done"], false);
+    assert_eq!(plan["selections"], 1, "alleen de opstelling van Ajax, niet die van het nationale team");
+    assert_eq!(plan["was_captain"], true);
+    assert_eq!(plan["buyer_pays"], true);
+    assert_eq!(plan["balance_after"], 35_000_000);
+    assert_eq!(plan["to"], "AC Milan");
+    assert!(snapshot() == before, "een controle schrijft niets");
+
+    // wat niet mag
+    let err = |req: Value| call(req).unwrap_err();
+    assert!(err(json!({"cmd": "sell", "uid": 4, "club": 45, "fee": 1})).contains("speler-trainer"));
+    assert!(err(json!({"cmd": "sell", "uid": 37058888, "club": 992, "fee": 1})).contains("eigen club"));
+    assert!(err(json!({"cmd": "sell", "uid": 37058888, "club": 47, "fee": 1})).contains("vrouwenclubs"));
+    assert!(err(json!({"cmd": "sell", "uid": 37058888, "club": 77, "fee": 1})).contains("zit vol"));
+    assert!(err(json!({"cmd": "sell", "uid": 37058888, "club": 45, "fee": -5})).contains("transfersom"));
+    assert!(snapshot() == before, "geweigerde verkopen schrijven niets");
+
+    // verkopen
+    let req = json!({"cmd": "sell", "uid": 37058888, "club": 45, "fee": 10_000_000, "wage": 30_000});
+    if call(json!({"cmd": "ping"})).unwrap()["known_build"] == false {
+        assert!(err(req.clone()).contains("alleen lezen"));
+        assert!(snapshot() == before);
+        call(json!({"cmd": "allow_untested", "on": true})).unwrap();
+    }
+    let sale = call(req).unwrap();
+    assert_eq!(sale["done"], true);
+
+    let senior_list = list_items(m.senior + 0x38);
+    assert!(!senior_list.contains(&m.wijndal));
+    assert_eq!(senior_list.len(), 3, "de anderen blijven, in dezelfde volgorde");
+    assert!(list_items(m.u21 + 0x38).is_empty(), "ook uit de U21-lijst");
+    let ms = mem::u64_at(mem::u64_at(m.milan + 0x18).unwrap()).unwrap();
+    let milan_list = list_items(ms + 0x38);
+    assert_eq!(milan_list.len(), 4);
+    assert_eq!(milan_list[3], m.wijndal);
+    assert_eq!(mem::u64_at(ms + 0x48), mem::u64_at(ms + 0x40), "capaciteit groeit mee binnen het blok");
+    assert_eq!(mem::u64_at(m.wijndal + l.p_team), Some(ms));
+    let c = m.wijndal_contract;
+    assert_eq!(mem::u64_at(c + 0x10), Some(ms));
+    assert_eq!(mem::u64_at(c + 0x18), Some(ms));
+    assert_eq!(mem::read_bytes(c + 0x44, 4).unwrap(), date_bytes(2027, 76 | 0x4000), "getekend vandaag, vlaggen blijven");
+    assert_eq!(mem::read_bytes(c + 0x4C, 4).unwrap(), date_bytes(2027, 76 | 0x4000));
+    assert_eq!(mem::i32_at(c + 0x20), Some(30_000));
+    assert_eq!(mem::u8_at(c + 0x5D), Some(255), "geen rugnummer");
+    assert_eq!(mem::u8_at(c + 0x57), Some(0), "van de transferlijst");
+    assert_eq!(mem::u64_at(m.senior + 0x88), Some(0), "aanvoerdersband vrij");
+    assert_eq!(mem::u32_at(m.our_selection + 0x28 + 4), Some(u32::MAX), "plek in de opstelling leeg");
+    assert_eq!(mem::u32_at(m.our_selection + 0x28), Some(5003), "de rest blijft staan");
+    assert_eq!(mem::u32_at(m.national_selection + 0x28 + 4), Some(5001), "nationaal team blijft");
+    assert_eq!(mem::i32_at(m.finance + 0x0C), Some(35_000_000));
+    assert_eq!(mem::i32_at(m.milan_finance + 0x0C), Some(90_000_000));
+    assert_eq!(mem::i32_at(m.milan_finance + 0x7C4), Some(20_000_000));
+    let squad = call(json!({"cmd": "squad"})).unwrap();
+    assert!(!squad.as_array().unwrap().iter().any(|p| p["uid"] == 37058888), "niet meer in je selectie");
+
+    // ongedaan maken zet alles precies terug
+    let undone = call(json!({"cmd": "undo"})).unwrap();
+    assert!(undone["undone"].as_str().unwrap().starts_with("verkoop Owen Wijndal"));
+    assert!(snapshot() == before, "na ongedaan maken is het geheugen weer precies zoals ervoor");
+
+    // als de game intussen geld heeft geboekt, zet ongedaan maken alleen de transfersom terug
+    call(json!({"cmd": "sell", "uid": 37058888, "club": 45, "fee": 10_000_000})).unwrap();
+    let now = mem::i32_at(m.finance + 0x0C).unwrap();
+    mem::write_checked(m.finance + 0x0C, &now.to_le_bytes(), &(now - 123).to_le_bytes()).unwrap();
+    call(json!({"cmd": "undo"})).unwrap();
+    assert_eq!(mem::i32_at(m.finance + 0x0C), Some(25_000_000 - 123));
+}
+
+#[test]
+fn sell_on_mac() {
+    let _g = reset(Abi::Itanium);
+    let base = 0x1_2000_0000u64;
+    with(|s| s.images.push(Image { path: "/x/game_plugin".into(), id: Some("F4540355-2186-39CB-9119-C706A6A35346".into()), start: base, end: base + 0x6000_0000, segments: Vec::new() }));
+    let m = build_market(Abi::Itanium, &game::MAC, base, 0x56D2E60, 0x56D2FD0, None);
+    run_market(&game::MAC, &m);
+}
+
+#[test]
+fn sell_on_windows() {
+    let _g = reset(Abi::Msvc);
+    let base = 0x7FF6_0000_0000u64;
+    with(|s| s.images.push(Image { path: r"C:\fm\game_plugin.dll".into(), id: Some("PE-6AE565AF-1821C000".into()), start: base, end: base + 0x1821_C000, segments: Vec::new() }));
+    let m = build_market(Abi::Msvc, &game::WIN, base, 0x5705818, 0x5705988, Some(0x56AF378));
+    run_market(&game::WIN, &m);
+}

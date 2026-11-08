@@ -9,6 +9,7 @@
 pub mod game;
 mod mem;
 mod rtti;
+mod sell;
 #[cfg(test)]
 mod tests;
 
@@ -187,6 +188,19 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
             game::set_week(start, &days).map(|n| json!({"days": n}))
         }
         "undo" => game::undo_last().map(|l| json!({"undone": l})),
+        "clubs" => {
+            let q = req.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100) as usize;
+            sell::find_clubs(q, limit).map(|c| json!(c))
+        }
+        "sell" => {
+            let n = |k: &str| req.get(k).and_then(|v| v.as_i64());
+            let uid = n("uid").ok_or("uid ontbreekt")? as u32;
+            let club = n("club").ok_or("club ontbreekt")? as u32;
+            let fee = n("fee").ok_or("fee ontbreekt")?;
+            let dry = req.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+            sell::sell(uid, club, fee, n("wage"), dry).map(|s| json!(s))
+        }
         // ---- onderzoek (alleen lezen) -------------------------------------------------
         "chain" => game::chain().map(|c| {
             json!({"human": format!("{:#x}", c.human), "contract": format!("{:#x}", c.contract), "team": format!("{:#x}", c.team), "club": format!("{:#x}", c.club), "finance": format!("{:#x}", c.finance)})

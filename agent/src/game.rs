@@ -36,6 +36,12 @@ pub struct Layout {
     pub p_uid: u64,
     /// speler-trainers hebben een extra blok: hun persoons- en identiteitsvelden liggen verder
     pub player_coach_shift: u64,
+    /// i32 pond: transferwaarde en vraagprijs (-1 = geen)
+    pub p_value: u64,
+    pub p_asking: u64,
+    /// blokgroottes van de allocator van de game (FMLibreEditor [heap]): een lijst van n pointers
+    /// zit in het kleinste blok dat 8n bytes houdt
+    pub heap_blocks: &'static [u64],
 }
 
 /// macOS (clang), Steam-build 26340721: gemeten en live getest.
@@ -55,6 +61,9 @@ pub const MAC: Layout = Layout {
     p_identity: 0x388,
     p_uid: 0x394,
     player_coach_shift: 0xF8,
+    p_value: 0x22C,
+    p_asking: 0x230,
+    heap_blocks: &[144, 160, 192, 224, 256, 288, 320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536, 2048, 2560, 3072, 3584, 4096],
 };
 
 /// Windows (MSVC), FMLibreEditor layout.toml (geverifieerd op de Steam- en Game Pass-builds):
@@ -76,6 +85,9 @@ pub const WIN: Layout = Layout {
     p_identity: 0x288,
     p_uid: 0x294,
     player_coach_shift: 0xF8,
+    p_value: 0x234,
+    p_asking: 0x238,
+    heap_blocks: &[144, 160, 192, 224, 256, 288, 320, 384, 448, 512],
 };
 
 pub fn layout() -> &'static Layout {
@@ -87,20 +99,23 @@ pub fn layout() -> &'static Layout {
 
 // ---- veldposities die op beide platforms gelijk zijn --------------------------------
 
-const CONTRACT_OWNER: u64 = 0x08;
-const CONTRACT_TEAM: u64 = 0x10;
+pub(crate) const CONTRACT_OWNER: u64 = 0x08;
+pub(crate) const CONTRACT_TEAM: u64 = 0x10;
+const CONTRACT_WAGE: u64 = 0x20;
 const CONTRACT_UNHAPPINESS: u64 = 0x30;
+const CONTRACT_EXPIRES: u64 = 0x48;
+const CONTRACT_LISTING: u64 = 0x57;
 const CONTRACT_HAPPINESS: u64 = 0x5A;
 
-const TEAM_CLUB: u64 = 0x30;
-const TEAM_PLAYERS: u64 = 0x38;
+pub(crate) const TEAM_CLUB: u64 = 0x30;
+pub(crate) const TEAM_PLAYERS: u64 = 0x38;
 
-const CLUB_UID: u64 = 0x0C;
+pub(crate) const CLUB_UID: u64 = 0x0C;
 const CLUB_NAME: u64 = 0xC0;
-const CLUB_FINANCE: u64 = 0x150;
+pub(crate) const CLUB_FINANCE: u64 = 0x150;
 
-const FIN_BALANCE: u64 = 0x0C;
-const FIN_TRANSFER: u64 = 0x7C4;
+pub(crate) const FIN_BALANCE: u64 = 0x0C;
+pub(crate) const FIN_TRANSFER: u64 = 0x7C4;
 const FIN_TOTAL_WAGE: u64 = 0x808;
 const FIN_WAGE: u64 = 0x814;
 const FIN_TICKET: u64 = 0x864;
@@ -123,13 +138,15 @@ pub struct Build {
     pub current_date: u64,
     /// RVA in game_plugin van het (begin, end)-paar van de staflijst
     pub staff: u64,
+    /// RVA in game_plugin van het (begin, end)-paar van de clublijst
+    pub clubs: u64,
 }
 
 pub const BUILDS: &[Build] = &[
     // gemeten en live getest (7 nov 2026); RVA's uit FMLibreEditor steam-26340721-macos-arm64.toml
-    Build { id: "F4540355-2186-39CB-9119-C706A6A35346", label: "Steam 26340721 macOS arm64", writes_tested: true, current_date: 0x56B1DB8, staff: 0x56D2E60 },
+    Build { id: "F4540355-2186-39CB-9119-C706A6A35346", label: "Steam 26340721 macOS arm64", writes_tested: true, current_date: 0x56B1DB8, staff: 0x56D2E60, clubs: 0x56D2FD0 },
     // FMLibreEditor steam-26340721.toml: game_plugin.dll met SizeOfImage 0x1821C000 en linktijd 0x6AE565AF
-    Build { id: "PE-6AE565AF-1821C000", label: "Steam 26340721 Windows", writes_tested: false, current_date: 0x56AF378, staff: 0x5705818 },
+    Build { id: "PE-6AE565AF-1821C000", label: "Steam 26340721 Windows", writes_tested: false, current_date: 0x56AF378, staff: 0x5705818, clubs: 0x5705988 },
 ];
 
 /// Aanpassen toestaan op een build die (nog) niet live getest is; de gebruiker zet dit zelf aan.
@@ -143,7 +160,7 @@ pub fn allow_untested() -> bool {
     ALLOW_UNTESTED.load(Ordering::Acquire)
 }
 
-fn profile(id: Option<&str>) -> Option<&'static Build> {
+pub(crate) fn profile(id: Option<&str>) -> Option<&'static Build> {
     BUILDS.iter().find(|b| Some(b.id) == id)
 }
 
@@ -156,13 +173,27 @@ pub struct Patch {
     pub new: Vec<u8>,
 }
 
+/// Eén wijziging zoals hij ongedaan kan worden gemaakt.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Change {
+    pub label: String,
+    /// geschreven alleen als het geheugen nog het verwachte bevat; ongedaan maken net zo
+    pub patches: Vec<Patch>,
+    /// zoals `patches`, maar ongedaan maken slaat ze over als de game ze intussen heeft veranderd
+    /// (de opstellingen)
+    pub soft: Vec<Patch>,
+    /// geldbedragen (i32) die met zoveel veranderen; ongedaan maken trekt het verschil eraf van
+    /// wat er dan staat, want de game boekt elke dag zelf bij en af
+    pub deltas: Vec<(u64, i64)>,
+}
+
 #[derive(Default)]
 struct State {
     human: Option<u64>,
     /// (adres van de team-pointer in het trainingsblok, afstand tot de weeklijst)
     training_block: Option<(u64, u64)>,
     human_vtables: Vec<u64>,
-    undo: Vec<(String, Vec<Patch>)>,
+    undo: Vec<Change>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -183,9 +214,12 @@ pub fn build() -> (Option<String>, bool) {
 pub fn reset() {
     let mut g = STATE.lock().unwrap_or_else(|e| e.into_inner());
     *g = None;
+    drop(g);
+    crate::sell::reset();
 }
 
-fn apply(label: &str, patches: Vec<Patch>) -> Result<usize, String> {
+/// Mag er op deze build geschreven worden?
+pub(crate) fn writes_allowed() -> Result<(), String> {
     let (id, tested) = build();
     if !tested && !allow_untested() {
         return Err(format!(
@@ -193,30 +227,67 @@ fn apply(label: &str, patches: Vec<Patch>) -> Result<usize, String> {
             id.unwrap_or_else(|| "?".into())
         ));
     }
-    let mut done: Vec<Patch> = Vec::new();
-    for p in &patches {
-        if let Err(e) = mem::write_checked(p.addr, &p.old, &p.new) {
-            // terugdraaien wat al geschreven is
-            for d in done.iter().rev() {
-                let _ = mem::write_checked(d.addr, &d.new, &d.old);
-            }
-            return Err(e);
-        }
-        done.push(p.clone());
-    }
-    let n = done.len();
-    with_state(|s| s.undo.push((label.to_string(), done)));
+    Ok(())
+}
+
+fn add_i32(addr: u64, by: i64) -> Result<(), String> {
+    let now = mem::i32_at(addr).ok_or_else(|| format!("{addr:#x} niet leesbaar"))?;
+    let next = i32::try_from(now as i64 + by).map_err(|_| "bedrag past niet / amount out of range".to_string())?;
+    mem::write_checked(addr, &now.to_le_bytes(), &next.to_le_bytes())
+}
+
+fn apply(label: &str, patches: Vec<Patch>) -> Result<usize, String> {
+    let n = patches.len();
+    apply_change(Change { label: label.to_string(), patches, ..Default::default() })?;
     Ok(n)
 }
 
+/// Schrijft een wijziging (eerst `soft`, dan `patches`, dan de bedragen). Lukt één stap niet,
+/// dan wordt alles wat al geschreven is teruggezet.
+pub(crate) fn apply_change(change: Change) -> Result<(), String> {
+    writes_allowed()?;
+    let mut done: Vec<&Patch> = Vec::new();
+    let mut paid: Vec<(u64, i64)> = Vec::new();
+    let rollback = |done: &[&Patch], paid: &[(u64, i64)]| {
+        for (a, by) in paid.iter().rev() {
+            let _ = add_i32(*a, -by);
+        }
+        for d in done.iter().rev() {
+            let _ = mem::write_checked(d.addr, &d.new, &d.old);
+        }
+    };
+    for p in change.soft.iter().chain(&change.patches) {
+        if let Err(e) = mem::write_checked(p.addr, &p.old, &p.new) {
+            rollback(&done, &paid);
+            return Err(e);
+        }
+        done.push(p);
+    }
+    for (a, by) in &change.deltas {
+        if let Err(e) = add_i32(*a, *by) {
+            rollback(&done, &paid);
+            return Err(e);
+        }
+        paid.push((*a, *by));
+    }
+    with_state(|s| s.undo.push(change.clone()));
+    Ok(())
+}
+
 pub fn undo_last() -> Result<String, String> {
-    let Some((label, patches)) = with_state(|s| s.undo.pop()) else {
+    let Some(change) = with_state(|s| s.undo.pop()) else {
         return Err("niets om ongedaan te maken".into());
     };
-    for p in patches.iter().rev() {
+    for (a, by) in change.deltas.iter().rev() {
+        add_i32(*a, -by)?;
+    }
+    for p in change.patches.iter().rev() {
         mem::write_checked(p.addr, &p.new, &p.old)?;
     }
-    Ok(label)
+    for p in change.soft.iter().rev() {
+        let _ = mem::write_checked(p.addr, &p.new, &p.old);
+    }
+    Ok(change.label)
 }
 
 // ---- manager en club --------------------------------------------------------
@@ -255,7 +326,7 @@ fn check_chain(h: u64) -> Option<Chain> {
     Some(Chain { human: h, contract, team, club, finance })
 }
 
-fn finance_looks_real(f: u64) -> bool {
+pub(crate) fn finance_looks_real(f: u64) -> bool {
     let (Some(tp), Some(corp), Some(tb), Some(wb), Some(twb)) = (
         mem::f32_at(f + FIN_TICKET),
         mem::u8_at(f + FIN_CORPORATE),
@@ -332,12 +403,16 @@ pub struct ClubInfo {
     pub total_wage_budget: i32,
 }
 
+/// Naam van een club (FM-string, soms via nog een pointer).
+pub(crate) fn club_name(club: u64) -> Option<String> {
+    mem::u64_at(club + CLUB_NAME)
+        .and_then(mem::fm_string)
+        .or_else(|| mem::u64_at(club + CLUB_NAME).and_then(mem::u64_at).and_then(mem::fm_string))
+}
+
 pub fn club() -> Result<ClubInfo, String> {
     let c = chain()?;
-    let name = mem::u64_at(c.club + CLUB_NAME)
-        .and_then(mem::fm_string)
-        .or_else(|| mem::u64_at(c.club + CLUB_NAME).and_then(mem::u64_at).and_then(mem::fm_string))
-        .unwrap_or_else(|| "?".into());
+    let name = club_name(c.club).unwrap_or_else(|| "?".into());
     Ok(ClubInfo {
         uid: mem::u32_at(c.club + CLUB_UID).unwrap_or(0),
         name,
@@ -397,6 +472,16 @@ pub struct PlayerInfo {
     pub unhappy_reasons: bool,
     pub injuries: Vec<Injury>,
     pub bans: u32,
+    /// transferwaarde en vraagprijs in pond (-1 = geen vraagprijs)
+    pub value: i32,
+    pub asking_price: i32,
+    /// salaris in pond per week en einde contract
+    pub wage: Option<i32>,
+    pub contract_ends: Option<FmDate>,
+    /// op de transferlijst (bit 0) of huurlijst (bit 1)
+    pub listed: u8,
+    /// speler-trainer: (nog) niet te verkopen
+    pub player_coach: bool,
     #[serde(skip)]
     pub addr: u64,
     #[serde(skip)]
@@ -411,7 +496,7 @@ fn name_entry(entry: u64) -> Option<String> {
 }
 
 /// Het contract van een speler, als het terugwijst naar zijn identiteitsblok.
-fn player_contract(p: u64, shift: u64) -> Option<u64> {
+pub(crate) fn player_contract(p: u64, shift: u64) -> Option<u64> {
     let l = layout();
     let ct = mem::u64_at(p + l.p_contract + shift).filter(|c| mem::is_ptr(*c))?;
     (mem::u64_at(ct + CONTRACT_OWNER)? == p + l.p_identity + shift).then_some(ct)
@@ -450,10 +535,14 @@ fn read_player(p: u64, team: u64) -> Option<PlayerInfo> {
     });
     let morale = mem::u8_at(p + l.p_morale)?;
     let (mut happiness, mut unhappy) = (None, false);
+    let (mut wage, mut contract_ends, mut listed) = (None, None, 0);
     if let Some(ct) = player_contract(p, shift) {
         // i8, -100..100 (FMLibreEditor: happiness 0x5A, playing-time happiness 0x5C)
         happiness = mem::u8_at(ct + CONTRACT_HAPPINESS).map(|v| v as i8 as i16);
         unhappy = mem::u64_at(ct + CONTRACT_UNHAPPINESS).is_some_and(|x| x != 0);
+        wage = mem::i32_at(ct + CONTRACT_WAGE);
+        contract_ends = FmDate::read(ct + CONTRACT_EXPIRES);
+        listed = mem::u8_at(ct + CONTRACT_LISTING).unwrap_or(0) & 0b11;
     }
     let mut injuries = Vec::new();
     let mut bans = 0;
@@ -479,13 +568,19 @@ fn read_player(p: u64, team: u64) -> Option<PlayerInfo> {
         unhappy_reasons: unhappy,
         injuries,
         bans,
+        value: mem::i32_at(p + l.p_value).unwrap_or(0),
+        asking_price: mem::i32_at(p + l.p_asking).unwrap_or(-1),
+        wage,
+        contract_ends,
+        listed,
+        player_coach: shift != 0,
         addr: p,
         shift,
     })
 }
 
 /// (adres van de lijstkop, elementen) van een (begin, end, cap)-lijst met pointers.
-fn pointer_list(header: u64, max: usize) -> Option<(u64, Vec<u64>)> {
+pub(crate) fn pointer_list(header: u64, max: usize) -> Option<(u64, Vec<u64>)> {
     let begin = mem::u64_at(header)?;
     let end = mem::u64_at(header + 8)?;
     if begin == 0 && end == 0 {
@@ -633,7 +728,7 @@ pub struct FmDate {
 }
 
 impl FmDate {
-    fn read(addr: u64) -> Option<FmDate> {
+    pub(crate) fn read(addr: u64) -> Option<FmDate> {
         let raw = mem::u16_at(addr)?;
         let year = mem::u16_at(addr + 2)?;
         let doy = raw & 0x1FF;
