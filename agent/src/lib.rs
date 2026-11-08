@@ -189,6 +189,11 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
             game::set_week(start, &days).map(|n| json!({"days": n}))
         }
         "undo" => game::undo_last().map(|l| json!({"undone": l})),
+        "human_flags" => game::human_flags().map(|f| json!(f)),
+        "set_human_flags" => {
+            let b = |k: &str| req.get(k).and_then(|v| v.as_bool());
+            game::set_human_flags(b("registration_anytime"), b("numbers_anytime")).map(|f| json!(f))
+        }
         "understanding" => understanding::understanding().map(|u| json!(u)),
         "max_understanding" => {
             let dry = req.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);

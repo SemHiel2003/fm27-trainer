@@ -109,6 +109,7 @@ struct World {
     /// begrip-records van speler 1 en 2
     tu1: u64,
     tu2: u64,
+    human: u64,
 }
 
 /// Bouwt een FM-wereld: manager → contract → team → club → financiën, twee spelers (een gewone en
@@ -136,10 +137,12 @@ fn build_world(l: &Layout, plugin_base: u64, staff_rva: u64, date_rva: Option<u6
     let team = h.alloc(0xB0);
     h.w64(team + 0x30, club);
 
-    // de menselijke manager en zijn contract
+    // de menselijke manager en zijn contract; op +0x440 het HUMAN_NON_PLAYER-subobject (vtable)
     let human = h.alloc(0x600);
     let contract = h.alloc(0x80);
     h.w64(human + l.staff_contract + l.human_shift, contract);
+    let hvt = fake_class(mem::abi(), plugin_base, "db", "HUMAN_NON_PLAYER");
+    h.w64(human + 0x440, hvt);
     h.w64(contract + 0x08, human + l.staff_identity + l.human_shift);
     h.w64(contract + 0x10, team);
     // andere staf zonder club
@@ -278,7 +281,7 @@ fn build_world(l: &Layout, plugin_base: u64, staff_rva: u64, date_rva: Option<u6
 
     h.install(true);
     statics.install(false);
-    World { finance, p1, p2, p1_contract: c1, p1_injuries: inj_rec, p2_absences: rec2 + 0x18, weeks, tu1, tu2 }
+    World { finance, p1, p2, p1_contract: c1, p1_injuries: inj_rec, p2_absences: rec2 + 0x18, weeks, tu1, tu2, human }
 }
 
 fn i32_at(a: u64) -> i32 {
@@ -366,6 +369,25 @@ fn run_world(l: &'static Layout, w: &World) {
     call(json!({"cmd": "undo"})).unwrap();
     assert_eq!(mem::u8_at(w.p1 + l.p_morale), Some(9));
     assert_eq!(mem::u64_at(w.p1_contract + 0x30), Some(0xDEAD_BEE8));
+
+    // spelregels van de manager (editorvlaggen): alleen waar de plek bekend is
+    let hf = call(json!({"cmd": "human_flags"})).unwrap();
+    assert_eq!(hf["supported"], l.human_flags.is_some());
+    if l.human_flags.is_some() {
+        assert_eq!(hf["registration_anytime"], false);
+        let r = call(json!({"cmd": "set_human_flags", "registration_anytime": true})).unwrap();
+        assert_eq!(r["registration_anytime"], true);
+        assert_eq!(r["numbers_anytime"], false);
+        assert_eq!(mem::u32_at(w.human + 0x3FC), Some(0x100));
+        let r = call(json!({"cmd": "set_human_flags", "numbers_anytime": true})).unwrap();
+        assert_eq!(mem::u32_at(w.human + 0x3FC), Some(0x300));
+        assert_eq!(r["flags"], 0x300);
+        call(json!({"cmd": "undo"})).unwrap();
+        call(json!({"cmd": "undo"})).unwrap();
+        assert_eq!(mem::u32_at(w.human + 0x3FC), Some(0), "twee keer ongedaan maken: alles terug");
+    } else {
+        assert!(call(json!({"cmd": "set_human_flags", "registration_anytime": true})).is_err());
+    }
 
     // tactisch begrip: lezen
     let u = call(json!({"cmd": "understanding"})).unwrap();

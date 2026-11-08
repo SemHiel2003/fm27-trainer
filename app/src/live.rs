@@ -21,6 +21,7 @@ struct Snapshot {
     understanding: Option<Value>,
     /// uitkomst van het op 100 % houden, als er iets teruggezet is
     kept: Option<Value>,
+    human_flags: Option<Value>,
     message: String,
     error: bool,
     untested: Option<bool>,
@@ -80,6 +81,8 @@ pub struct LiveState {
     pub squad: Vec<Value>,
     /// tactisch begrip van de selectie (opdracht `understanding`)
     pub understanding: Option<Value>,
+    /// editorvlaggen van de manager (opdracht `human_flags`)
+    pub human_flags: Option<Value>,
     pub training: Option<Outcome>,
     pub status: String,
     pub status_error: bool,
@@ -112,6 +115,7 @@ impl Default for LiveState {
             club: None,
             squad: Vec::new(),
             understanding: None,
+            human_flags: None,
             training: None,
             status: String::new(),
             status_error: false,
@@ -273,6 +277,9 @@ impl LiveState {
                 if let Ok(u) = agent::request(json!({"cmd": "understanding"})) {
                     snap.understanding = Some(u);
                 }
+                if let Ok(f) = agent::request(json!({"cmd": "human_flags"})) {
+                    snap.human_flags = Some(f);
+                }
                 // onbekende FM-versie: de module staat dan op alleen-lezen
                 if let Ok(p) = agent::request(json!({"cmd": "ping"})) {
                     let untested = p.get("known_build").and_then(|v| v.as_bool()) == Some(false);
@@ -352,6 +359,9 @@ impl LiveState {
                 }
                 if let Some(u) = s.understanding {
                     self.understanding = Some(u);
+                }
+                if let Some(f) = s.human_flags {
+                    self.human_flags = Some(f);
                 }
                 if let Some(r) = s.kept {
                     let n = r.get("players").and_then(|v| v.as_u64()).unwrap_or(0);

@@ -1006,6 +1006,44 @@ impl App {
             format!("FM rekent intern in ponden; euro's zijn omgerekend met koers {rate:.2} (aan te passen bij Instellingen)."),
             format!("FM stores pounds internally; euros use rate {rate:.2} (change it in Settings).")
         )));
+        ui.add_space(12.0);
+        // de vlaggen van FM's in-game editor op je manager: registratie en rugnummers altijd
+        let hf = self.live.human_flags.clone();
+        theme::card(ui, |ui| {
+            ui.label(theme::h2(t!("Spelregels", "Rules")));
+            ui.label(theme::faint(t!(
+                "Dezelfde schakelaars als in FM's in-game editor, direct op je manager gezet. Controleer het in FM op het registratiescherm van de competitie.",
+                "The same switches as FM's in-game editor, set straight on your manager. Check it in FM on the competition's registration screen."
+            )));
+            ui.add_space(6.0);
+            match hf.as_ref().and_then(|v| v.get("supported")).and_then(|v| v.as_bool()) {
+                Some(true) => {
+                    let rows = [
+                        ("registration_anytime", t!("Spelers altijd registreren", "Register players anytime"), t!("Selectieregistratie ook buiten de registratieperiode (competitie, UEFA).", "Squad registration outside the registration window too (league, UEFA).")),
+                        ("numbers_anytime", t!("Rugnummers altijd aanpassen", "Change squad numbers anytime"), t!("Rugnummers ook wijzigen als de competitie ze heeft vastgezet.", "Change squad numbers even when the competition has locked them.")),
+                    ];
+                    for (key, label, hint) in rows {
+                        let mut on = hf.as_ref().and_then(|v| v.get(key)).and_then(|v| v.as_bool()).unwrap_or(false);
+                        ui.horizontal(|ui| {
+                            if theme::toggle(ui, &mut on).changed() && connected && !busy {
+                                let mut m = serde_json::Map::new();
+                                m.insert("cmd".into(), Value::String("set_human_flags".into()));
+                                m.insert(key.into(), Value::Bool(on));
+                                action = Some((label.to_string(), Value::Object(m)));
+                            }
+                            ui.label(theme::label_strong(label));
+                            ui.label(theme::faint(hint));
+                        });
+                    }
+                }
+                Some(false) => {
+                    ui.label(theme::faint(t!("Op deze FM-versie of dit platform nog niet beschikbaar.", "Not available on this FM build or platform yet.")));
+                }
+                None => {
+                    ui.label(theme::faint(t!("Nog niet uitgelezen.", "Not read yet.")));
+                }
+            }
+        });
         if let Some((l, r)) = action {
             self.live.refresh(ctx, &l, Some(r));
         }

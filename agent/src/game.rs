@@ -41,6 +41,8 @@ pub struct Layout {
     pub p_asking: u64,
     /// pointer naar het record met tactisch begrip (zie understanding.rs)
     pub p_understanding: u64,
+    /// u32 met de editorvlaggen van de manager (registratie/rugnummers altijd), als bekend
+    pub human_flags: Option<u64>,
     /// blokgroottes van de allocator van de game (FMLibreEditor [heap]): een lijst van n pointers
     /// zit in het kleinste blok dat 8n bytes houdt
     pub heap_blocks: &'static [u64],
@@ -67,6 +69,7 @@ pub const MAC: Layout = Layout {
     p_asking: 0x230,
     // niet gemeten op de Mac: Windows 0x100 min het vbptr-woord; het record wordt streng gecontroleerd
     p_understanding: 0xF8,
+    human_flags: None,
     heap_blocks: &[144, 160, 192, 224, 256, 288, 320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536, 2048, 2560, 3072, 3584, 4096],
 };
 
@@ -94,6 +97,7 @@ pub const WIN: Layout = Layout {
     p_asking: 0x238,
     // gemeten (8 nov 2026) door FM's editor-actie "Maximise Tactical Understanding" te ontleden
     p_understanding: 0x100,
+    human_flags: Some(0x3FC),
     heap_blocks: &[144, 160, 192, 224, 256, 288, 320, 384, 448, 512],
 };
 
@@ -714,6 +718,65 @@ pub fn inspire(uids: &Option<Vec<u32>>, morale: u8, clear_unhappiness: bool) -> 
         apply("moraal/happiness", patches)?;
     }
     Ok(n)
+}
+
+// ---- spelregels van de manager (vlaggen van FM's in-game editor) --------------------------
+//
+// FM's in-game editor kent per manager "Allow squad registration anytime" en "Allow squad numbers
+// anytime": bits in een u32 op manager+0x3FC (Windows; gevonden op 8 nov 2026 door de editor-actie
+// TEAM_CONTAINER_ALLOW_SQUAD_REGISTRATION_ANYTIME_ACTION te disassembleren: die zet of wist het bit
+// op het object dat de HUMAN-record teruggeeft, en dat is het managerobject zelf). Het subobject op
+// manager+0x440 is het HUMAN_NON_PLAYER-deel met de vtable die de editor gebruikt; dat is de
+// controle vóór het schrijven. Of een gezet bit "altijd toestaan" betekent, is afgeleid uit de
+// actie (standaard staat het bit uit); de gebruiker ziet het in FM's registratiescherm.
+
+pub const FLAG_REGISTRATION_ANYTIME: u32 = 0x100;
+pub const FLAG_NUMBERS_ANYTIME: u32 = 0x200;
+const HUMAN_VTABLE_SUB: u64 = 0x440;
+
+#[derive(Serialize)]
+pub struct HumanFlags {
+    pub supported: bool,
+    pub flags: u32,
+    pub registration_anytime: bool,
+    pub numbers_anytime: bool,
+}
+
+fn human_flags_addr() -> Result<u64, String> {
+    let off = layout().human_flags.ok_or("op dit platform nog niet bekend / not known on this platform yet")?;
+    let c = chain()?;
+    let sub = rtti::class_name(c.human + HUMAN_VTABLE_SUB);
+    if !sub.as_deref().is_some_and(|s| s.contains("HUMAN_NON_PLAYER")) {
+        return Err("managerobject ziet er anders uit dan verwacht / manager object looks different than expected".into());
+    }
+    Ok(c.human + off)
+}
+
+pub fn human_flags() -> Result<HumanFlags, String> {
+    let Ok(a) = human_flags_addr() else {
+        chain()?;
+        return Ok(HumanFlags { supported: false, flags: 0, registration_anytime: false, numbers_anytime: false });
+    };
+    let f = mem::u32_at(a).ok_or("vlaggen niet leesbaar / flags not readable")?;
+    Ok(HumanFlags { supported: true, flags: f, registration_anytime: f & FLAG_REGISTRATION_ANYTIME != 0, numbers_anytime: f & FLAG_NUMBERS_ANYTIME != 0 })
+}
+
+/// Zet de editorvlaggen van de manager (alleen wat meegegeven is), met undo.
+pub fn set_human_flags(registration: Option<bool>, numbers: Option<bool>) -> Result<HumanFlags, String> {
+    let a = human_flags_addr()?;
+    let cur = mem::u32_at(a).ok_or("vlaggen niet leesbaar / flags not readable")?;
+    let mut new = cur;
+    for (on, bit) in [(registration, FLAG_REGISTRATION_ANYTIME), (numbers, FLAG_NUMBERS_ANYTIME)] {
+        match on {
+            Some(true) => new |= bit,
+            Some(false) => new &= !bit,
+            None => {}
+        }
+    }
+    if new != cur {
+        apply("spelregels / rules", vec![Patch { addr: a, old: cur.to_le_bytes().to_vec(), new: new.to_le_bytes().to_vec() }])?;
+    }
+    human_flags()
 }
 
 // ---- training -----------------------------------------------------------------

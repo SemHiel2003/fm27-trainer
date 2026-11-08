@@ -58,6 +58,9 @@ top. Every change can be undone, and it only sticks once you save in FM.
 set the fee and wage, check, and he is in your squad; the money moves between the two clubs at once. Every move
 can be undone until you save in FM.
 
+**Rules.** The Club page has the two switches FM's in-game editor offers for your manager: register players
+anytime and change squad numbers anytime.
+
 **Tactical understanding.** The Squad page shows how well the squad knows your current tactic, per area, and can
 maximise it with one click, like FM's in-game editor does: every player's understanding of every setting goes to
 100 %. FM lets it drop again every game week, so there is a switch to keep it at 100 % while the app is open.

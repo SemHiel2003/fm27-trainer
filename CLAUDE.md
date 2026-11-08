@@ -48,6 +48,7 @@ tools/research/      fmq.py (onderzoeksclient), offers.py
 
 Alle opdrachten van de module: `ping`, `club`, `squad`, `set_finances`, `heal`, `lift_bans`, `inspire`, `undo`,
 `game_date`, `training_weeks`, `set_week`, `clubs`, `club_squad`, `sell`, `buy`, `understanding`, `max_understanding` (met `dry_run`),
+`human_flags`, `set_human_flags`,
 `allow_untested`, en voor onderzoek `chain`, `census`, `class_of`, `read`, `find_u16`, `find_ptr`, `write` (alleen
 met `expect`). Zie `agent/src/lib.rs`.
 
@@ -144,6 +145,14 @@ Development, 300–307 Physical, 400 Team Bonding, 401 Community, 402 reizen, 50
 **Opstellingen**: `simatch::PREPARED_TACTICS_CREATOR_ARRAY`, `+0x08` lijst, `+0x28` 26 × u32 persoons-id
 (0xFFFFFFFF = leeg). Lijstblokken van de allocator: Mac 144…4096, Windows 144…512 (`heap_blocks`).
 
+**Spelregels (editorvlaggen van de manager)**: u32 op manager+0x3FC (Windows; Mac onbekend, `Layout.human_flags`),
+bit 0x100 = "Allow squad registration anytime", 0x200 = "Allow squad numbers anytime" (FM's in-game editor,
+acties `TEAM_CONTAINER_ALLOW_SQUAD_REGISTRATION_ANYTIME_ACTION` / `..._SQUAD_NUMBERS_...`; de actie zet of wist het bit
+op het object dat de HUMAN-record via vtable+0x698 teruggeeft, en dat is het managerobject zelf: het subobject op
+manager+0x440 heeft de HUMAN_NON_PLAYER-vtable, wat de app controleert voor het schrijven). Standaard 0. Dat een
+gezet bit "altijd toestaan" betekent, is afgeleid, niet in FM's scherm gezien: controleren op het registratiescherm
+van een competitie. Opdrachten `human_flags`/`set_human_flags`, schakelaars op de Club-pagina ("Spelregels").
+
 **Tactisch begrip** (FM27's "Tactical Understanding", de opvolger van tactical familiarity; gevonden op 8 nov 2026
 door FM's editor-actie `TEAM_MAXIMISE_TACTICAL_UNDERSTANDING_ACTION` te disassembleren, zie
 `agent/src/understanding.rs`): speler `+0x100` → record van 0xE0 bytes. Zes blokken van 0x20 (gebied 0–5: Passing
@@ -168,6 +177,7 @@ via `read` uit fm.exe komt; game_plugin.dll ligt op Windows ingepakt op schijf m
 | budget, genezen, moraal, training schrijven, undo | ✅ | ✅ (8 nov 2026) |
 | verkopen (`sell`) | alleen simulatie | ✅ dry run én één echte verkoop + undo (8 nov 2026) |
 | kopen (`buy`, `club_squad`) | alleen simulatie | dry run live (8 nov 2026); echte aankoop door de gebruiker te testen |
+| spelregels (`set_human_flags`) | n.v.t. (plek onbekend) | gelezen (0); effect in FM door de gebruiker te controleren |
 | tactisch begrip (`understanding`, `max_understanding`) | alleen simulatie (offset 0xF8 is een gok) | ✅ gelezen en gemaximaliseerd (8 nov 2026) |
 | MSVC-RTTI | n.v.t. | ✅ testdata én live (census, opstellingen) |
 
