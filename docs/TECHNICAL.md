@@ -2,8 +2,9 @@
 
 The macOS side was measured on **FM27, Steam build 26340721, Apple silicon** (game_plugin LC_UUID
 `F4540355-2186-39CB-9119-C706A6A35346`) and checked against a real save and the running game. The Windows side
-uses the same build's layout as published by FMLibreEditor and is tested against simulated memory; it has not
-been live-tested by this project yet, so it is read-only until the user allows changes.
+uses the same build's layout as published by FMLibreEditor and was live-tested by this project on 8 November 2026
+(Steam build 26340721, `game_plugin.dll` `PE-6AE565AF-1821C000`, an Ajax save): club, squad, date and calendar
+read correctly, and budgets, morale, injuries, a training day and a sale were each written and undone.
 
 ## Architecture
 
@@ -48,9 +49,17 @@ simulated memory for tests), `rtti.rs` (Itanium and MSVC RTTI) and `game.rs` (la
 | Player names (first, last, common) | `0x298`, `0x2A0`, `0x2A8` | `0x2D8`, `0x2E0`, `0x2E8` |
 | Player contract, identity, UID | `0x2F0`, `0x388`, `0x394` | `0x330`, `0x288`, `0x294` |
 
-  Clubs, finances, contracts, teams, injuries and bans are the same on both. The training calendar block was
-  measured on macOS only; on Windows the agent tries `+0x28` first and then nearby offsets, accepting a list only
-  when every week has a valid date, ascending Mondays and valid session codes.
+  Clubs, finances, contracts, teams, injuries and bans are the same on both. The training calendar block holds
+  its week list at `+0x28` from the team pointer on Windows too (measured live); the agent still tries nearby
+  offsets as a fallback, accepting a list only when every week has a valid date, ascending Mondays and valid
+  session codes.
+- `game_plugin.dll` is packed: its sections are named `.xtext`, `.data1`, `.shared`, `.rodata`, `.sbss` (307 MB,
+  filled while loading), `.rdata` (small) and so on, not the usual `.text`/`.data`/`.rdata`. The MSVC RTTI
+  lookup (TypeDescriptors, Complete Object Locators, vtables) therefore scans every section except resources,
+  relocations, debug and import tables; a chunk that cannot be read in one go is retried in smaller pieces.
+  Finding a class this way takes about 1.5 s once (the vtables are cached), and a full scan of FM's heap (3.5 GB)
+  through `ReadProcessMemory` about 1.5 s in a release build. An unoptimised build is some 40 times slower, so
+  the workspace builds the agent crate with `opt-level = 3` in the dev profile as well.
 - `agent/src/tests.rs` runs every command (club, squad, budgets, heal, bans, morale, training, undo) against a
   simulated FM for both layouts, and the MSVC RTTI code against `agent/testdata/rtti_test.dll`, a small MSVC-ABI
   DLL built with clang and lld.
@@ -100,9 +109,17 @@ in a save (for example day `[200, 3, 7]` = Individual Development / In Possessio
 
 ## Screen reading
 
-The Breakdown pies fill clockwise from 12 o'clock. Each pie is measured in 36 angular sectors, so the dark
-spokes between segments don't count. The score blends the filled share with the hue (red 0 → green 120°). The
-component bars are read from the coloured marker between the grey ticks.
+The Breakdown pies have 10 segments and fill clockwise from 12 o'clock; the empty segments are near-white
+(measured on Windows, 8 November 2026) and the spokes between segments are light too. Each pie is measured in
+36 angular sectors: the last sector that is really coloured gives the filled share, which is the score (4 of 10
+segments = 40). The hue runs along with it (orange low, yellow middle, green high) and is only kept for
+information. Candidate pies are found by their coloured and near-white pixels, with the older mid-grey look as a
+fallback, because the lighter background of a highlighted row would otherwise pass for an empty gauge. The
+component bars have 11 slots with one coloured marker (the level) and one white marker; the level is the
+marker's slot counted from the first tick (slot 7 of 11 = 60). The translucent panel background can drown the
+ticks on one side, so the count of 11 is assumed when the chain of ticks is incomplete. A capture is saved as
+`last-capture.png` (and `last-breakdown.png` when it held a Breakdown) in the app's data folder, so a wrong
+reading can be replayed with `fm27-trainer analyze <png> --ocr`.
 
 ## Testing hooks
 

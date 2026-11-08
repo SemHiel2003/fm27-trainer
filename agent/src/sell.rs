@@ -15,9 +15,9 @@
 //! - een lijst die vol is, mag groeien tot het einde van het blok dat de allocator van de game
 //!   ervoor heeft uitgegeven (de blokgroottes staan in de layout); de bytes daar zijn dan nul.
 //!
-//! De transfersom gaat van het saldo (en transferbudget) van de koper naar het saldo van de
-//! verkoper. De game zelf zou de transfer ook in de historie en het nieuws zetten; dat doet de app
-//! (nog) niet. Een echt bod van een club aanmaken kan (nog) niet: die objecten zijn niet ontleed.
+//! De transfersom gaat van het saldo (en transferbudget) van de koper naar het saldo én het
+//! transferbudget van de verkoper. De game zelf zou de transfer ook in de historie en het nieuws
+//! zetten; dat doet de app (nog) niet. Een echt bod van een club aanmaken kan (nog) niet: die objecten zijn niet ontleed.
 
 use serde::Serialize;
 use std::collections::HashSet;
@@ -316,8 +316,9 @@ pub struct Sale {
     pub was_captain: bool,
     /// de koper betaalt (alleen clubs met volledige financiën)
     pub buyer_pays: bool,
-    /// jouw saldo na de verkoop (pond)
+    /// jouw saldo en transferbudget na de verkoop (pond)
     pub balance_after: i64,
+    pub transfer_budget_after: i64,
     /// mag er op deze FM-versie geschreven worden (anders eerst toestaan in Instellingen)
     pub allowed: bool,
     pub done: bool,
@@ -463,8 +464,10 @@ pub fn sell(uid: u32, to_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -
     push(&mut patches, contract + C_LISTING, vec![listing], vec![listing & !0b11]);
     push(&mut patches, obj + l.p_team, team.to_le_bytes().to_vec(), senior.to_le_bytes().to_vec());
 
-    // geld: de koper betaalt (saldo en transferbudget, niet onder nul), jij ontvangt
-    let mut deltas = vec![(chain.finance + FIN_BALANCE, fee)];
+    // geld: de koper betaalt (saldo en transferbudget, niet onder nul), jij ontvangt de som op je saldo
+    // én in je transferbudget (FM zelf maakt het deel vrij dat het bestuur toestaat; de app alles,
+    // bijstellen kan op de clubpagina)
+    let mut deltas = vec![(chain.finance + FIN_BALANCE, fee), (chain.finance + FIN_TRANSFER, fee)];
     let mut buyer_pays = false;
     if let Some(f) = mem::u64_at(buyer.addr + CLUB_FINANCE).filter(|f| mem::is_ptr(*f) && game::finance_looks_real(*f)) {
         buyer_pays = true;
@@ -477,8 +480,9 @@ pub fn sell(uid: u32, to_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -
         }
     }
     let balance = mem::i32_at(chain.finance + FIN_BALANCE).unwrap_or(0) as i64;
-    if balance + fee > i32::MAX as i64 {
-        return Err("je saldo zou te groot worden / balance would overflow".into());
+    let transfer_budget = mem::i32_at(chain.finance + FIN_TRANSFER).unwrap_or(0).max(0) as i64;
+    if balance + fee > i32::MAX as i64 || transfer_budget + fee > i32::MAX as i64 {
+        return Err("je saldo of transferbudget zou te groot worden / balance or transfer budget would overflow".into());
     }
 
     let from = game::club_name(our).unwrap_or_else(|| "?".into());
@@ -494,6 +498,7 @@ pub fn sell(uid: u32, to_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -
         was_captain,
         buyer_pays,
         balance_after: balance + fee,
+        transfer_budget_after: transfer_budget + fee,
         allowed: game::writes_allowed().is_ok(),
         done: false,
     };

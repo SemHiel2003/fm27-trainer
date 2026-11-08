@@ -275,24 +275,40 @@ fn is_colored(p: &image::Rgba<u8>) -> bool {
     s >= 0.42 && v >= 0.42 && (h <= 160.0 || h >= 345.0)
 }
 
-/// Grijs (leeg) deel van een meter. Achtergrond is donkerder, tekst is lichter.
+/// Middelgrijs (leeg) deel van een meter, zoals eerder op macOS gemeten. Let op: de lichtere
+/// achtergrond van een gemarkeerde rij in de Breakdown valt hier ook onder.
 fn is_gauge_grey(p: &image::Rgba<u8>) -> bool {
     let (_, s, v) = hsv(p);
     s < 0.16 && (0.30..=0.66).contains(&v)
 }
 
-fn column_hits(img: &RgbaImage, x: u32, y0: u32, y1: u32) -> u32 {
-    (y0..y1)
-        .filter(|&y| {
-            let p = img.get_pixel(x, y);
-            is_colored(p) || is_gauge_grey(p)
-        })
-        .count() as u32
+/// Bijna wit: het lege deel van een taartmeter zoals FM27 hem (op Windows gemeten) tekent, en de
+/// witte markering in een balk. Nooit achtergrond.
+fn is_light(p: &image::Rgba<u8>) -> bool {
+    let (_, s, v) = hsv(p);
+    s < 0.25 && v > 0.66
+}
+
+type Pred = dyn Fn(&image::Rgba<u8>) -> bool;
+
+fn column_hits(img: &RgbaImage, x: u32, y0: u32, y1: u32, part: &Pred) -> u32 {
+    (y0..y1).filter(|&y| part(img.get_pixel(x, y))).count() as u32
 }
 
 /// Zoekt de eerste taartmeter rechts van `x_start` binnen de rij rond `yc`.
-/// Kleine gaten (de donkere spaken tussen de taartpunten) breken een meter niet op.
+///
+/// Eerst streng: een meter bestaat uit gekleurde en bijna witte pixels (de lege segmenten), die
+/// nooit in de achtergrond voorkomen. Lukt dat niet (oudere weergave met middelgrijze lege
+/// segmenten), dan zoals voorheen met grijs; de achtergrond van een gemarkeerde rij geeft dan een
+/// veel te lange reeks en valt af.
 fn find_pie(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Option<GaugeShape> {
+    let strict: Box<Pred> = Box::new(|p| is_colored(p) || is_light(p));
+    let loose: Box<Pred> = Box::new(|p| is_colored(p) || is_gauge_grey(p));
+    find_pie_with(img, x_start, x_limit, yc, th, &*strict, &is_light).or_else(|| find_pie_with(img, x_start, x_limit, yc, th, &*loose, &is_gauge_grey))
+}
+
+/// Kleine gaten (de donkere spaken tussen de taartpunten) breken een meter niet op.
+fn find_pie_with(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32, part: &Pred, empty: &Pred) -> Option<GaugeShape> {
     let (w, h) = (img.width(), img.height());
     let band = (th * 1.0).max(6.0);
     let y0 = (yc - band).max(0.0) as u32;
@@ -306,14 +322,16 @@ fn find_pie(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Op
 
     let mut run: Option<(u32, u32)> = None; // (begin, laatste treffer)
     for x in xs..xe {
-        let hit = column_hits(img, x, y0, y1) >= need;
+        let hit = column_hits(img, x, y0, y1, part) >= need;
         if hit {
             run = Some(match run {
                 Some((rs, last)) if x - last <= max_gap + 1 => (rs, x),
                 Some((rs, last)) => {
                     let len = last + 1 - rs;
                     if len >= min_run && len <= max_run {
-                        return measure_pie(img, rs, last + 1, y0, y1);
+                        if let Some(g) = measure_pie(img, rs, last + 1, y0, y1, empty) {
+                            return Some(g);
+                        }
                     }
                     (x, x)
                 }
@@ -324,7 +342,7 @@ fn find_pie(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Op
     if let Some((rs, last)) = run {
         let len = last + 1 - rs;
         if len >= min_run && len <= max_run {
-            return measure_pie(img, rs, last + 1, y0, y1);
+            return measure_pie(img, rs, last + 1, y0, y1, empty);
         }
     }
     None
@@ -337,15 +355,16 @@ struct GaugeShape {
     bbox: [u32; 4],
 }
 
-/// Meet een taartmeter: FM vult hem met de klok mee vanaf 12 uur. De vulling wordt per
-/// hoeksector bepaald (36 sectoren van 10°), zodat de spaken tussen de punten niet meetellen.
-fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32) -> Option<GaugeShape> {
+/// Meet een taartmeter: FM vult hem met de klok mee vanaf 12 uur, in 10 segmenten. De vulling
+/// wordt per hoeksector bepaald (36 sectoren van 10°), zodat de spaken tussen de punten niet
+/// meetellen; `empty` herkent de lege segmenten.
+fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, empty: &Pred) -> Option<GaugeShape> {
     // verticale grenzen van de meter binnen de kolommen
     let (mut ty0, mut ty1) = (u32::MAX, 0u32);
     for y in y0..y1 {
         if (xa..xb).any(|x| {
             let p = img.get_pixel(x, y);
-            is_colored(p) || is_gauge_grey(p)
+            is_colored(p) || empty(p)
         }) {
             ty0 = ty0.min(y);
             ty1 = ty1.max(y);
@@ -383,24 +402,32 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32) -> Option<Ga
                 hx += h.to_radians().cos();
                 hy += h.to_radians().sin();
                 ncol += 1;
-            } else if is_gauge_grey(p) {
+            } else if empty(p) {
                 gry[bin] += 1;
             }
         }
     }
-    let mut filled = 0usize;
-    let mut seen = 0usize;
-    for i in 0..BINS {
-        if col[i] + gry[i] == 0 {
-            continue;
-        }
-        seen += 1;
-        if col[i] > gry[i] {
-            filled += 1;
-        }
-    }
+    let seen = (0..BINS).filter(|i| col[*i] + gry[*i] > 0).count();
     if seen < BINS / 2 {
         return None;
+    }
+    // De vulling loopt aaneengesloten met de klok mee vanaf 12 uur: de laatste sector met echt
+    // gekleurde pixels bepaalt het gevulde deel. De lichte spaken tussen de punten (en het lichte
+    // kruis in het midden) tellen zo niet als leeg.
+    let mut fill = 0.0f32;
+    for i in (0..BINS).rev() {
+        let total = (col[i] + gry[i]).max(1);
+        if col[i] >= 3 && col[i] * 4 >= total {
+            let frac = (col[i] as f32 / total as f32).min(1.0);
+            fill = (i as f32 + frac) / BINS as f32;
+            break;
+        }
+    }
+    // 10 segmenten: de lichte spaak op de grens snoept een paar procent af, dus afronden op een
+    // heel segment als de meting daar dichtbij zit
+    let tenths = (fill * 10.0).round();
+    if (fill * 10.0 - tenths).abs() <= 0.6 {
+        fill = tenths / 10.0;
     }
     let mut hue = hy.atan2(hx).to_degrees();
     if hue < 0.0 {
@@ -410,22 +437,24 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32) -> Option<Ga
         hue = 0.0; // roodtinten rond 360° → 0
     }
     Some(GaugeShape {
-        fill: filled as f32 / seen as f32,
+        fill: fill.clamp(0.0, 1.0),
         hue: if ncol == 0 { 0.0 } else { hue },
         bbox: [xa, ty0, xb, ty1 + 1],
     })
 }
 
-/// Meter-score: het gevulde deel van de taart, bijgestuurd met de tint (rood=0 … groen=100).
-fn gauge_score(fill: f32, hue: f32, has_color: bool) -> f32 {
+/// Meter-score: het gevulde deel van de taart (4 van de 10 segmenten = 40). De tint loopt daar
+/// in FM mee op (oranje laag, geel midden, groen hoog) en wordt alleen nog ter informatie bewaard.
+fn gauge_score(fill: f32, _hue: f32, has_color: bool) -> f32 {
     if !has_color {
         return 0.0;
     }
-    let hue_score = (hue / 120.0).clamp(0.0, 1.0) * 100.0;
-    (0.5 * fill * 100.0 + 0.5 * hue_score).clamp(0.0, 100.0)
+    (fill * 100.0).clamp(0.0, 100.0)
 }
 
-/// Balkmeter rechts van een onderdeel-titel: de gekleurde streep tussen grijze streepjes.
+/// Balkmeter rechts van een onderdeel-titel: een rij streepjes (11 plekken) waarvan er één
+/// gekleurd is (de stand) en één wit (een referentie). De gekleurde streep vervangt een grijs
+/// streepje, dus de witte en gekleurde streep tellen mee voor de breedte van de balk.
 fn read_bar(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Option<f32> {
     let (w, h) = (img.width(), img.height());
     let y0 = (yc - th * 0.9).max(0.0) as u32;
@@ -434,36 +463,80 @@ fn read_bar(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Op
     let xe = (x_limit as u32).min(w);
     let need = ((th * 0.45) as u32).max(3);
     let mut marker: Vec<u32> = Vec::new();
-    let mut greys: Vec<u32> = Vec::new();
+    let mut slots: Vec<u32> = Vec::new();
     for x in xs..xe {
-        let (mut c, mut g) = (0, 0);
+        let (mut c, mut g, mut l) = (0, 0, 0);
         for y in y0..y1 {
             let p = img.get_pixel(x, y);
             if is_colored(p) {
                 c += 1;
             } else if is_gauge_grey(p) {
                 g += 1;
+            } else if is_light(p) {
+                l += 1;
             }
         }
         if c >= need {
             marker.push(x);
-        } else if g >= need {
-            greys.push(x);
+        } else if g >= need || l >= need {
+            slots.push(x);
         }
     }
     if marker.is_empty() {
         return None;
     }
     let m = marker.iter().sum::<u32>() as f32 / marker.len() as f32;
-    // alleen grijze streepjes rond de marker (zelfde widget) meenemen
-    let span = th * 4.0;
-    let near: Vec<u32> = greys.into_iter().filter(|&x| (x as f32 - m).abs() < span).collect();
-    let lo = near.iter().copied().min().map(|x| x as f32).unwrap_or(m).min(m);
-    let hi = near.iter().copied().max().map(|x| x as f32).unwrap_or(m).max(m);
-    if hi - lo < th * 0.8 {
+    // Kolommen samenvoegen tot streepjes (middelpunten); brede grijze vlakken (de rand van een
+    // paneel, een icoon) zijn geen streepjes.
+    let max_width = (th * 0.35).max(5.0);
+    let mut centers: Vec<f32> = Vec::new();
+    let mut run: Option<(u32, u32)> = None;
+    let mut flush = |run: Option<(u32, u32)>, centers: &mut Vec<f32>| {
+        if let Some((a, b)) = run {
+            if (b - a + 1) as f32 <= max_width {
+                centers.push((a + b) as f32 / 2.0);
+            }
+        }
+    };
+    for x in slots {
+        run = match run {
+            Some((a, b)) if x == b + 1 => Some((a, x)),
+            other => {
+                flush(other, &mut centers);
+                Some((x, x))
+            }
+        };
+    }
+    flush(run, &mut centers);
+    centers.push(m);
+    centers.sort_by(|a, b| a.total_cmp(b));
+    centers.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+    // Vanaf de marker naar buiten lopen zolang de afstand tussen streepjes regelmatig blijft:
+    // de rand van de balk en losse vlakken verderop liggen verder uit elkaar en vallen af.
+    let mi = centers.iter().position(|c| (*c - m).abs() < 1.0)?;
+    let gaps: Vec<f32> = centers.windows(2).map(|w| w[1] - w[0]).collect();
+    let mut sorted = gaps.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let typical = *sorted.get(sorted.len() / 2)?;
+    let limit = typical * 1.6;
+    let (mut lo_i, mut hi_i) = (mi, mi);
+    while lo_i > 0 && centers[lo_i] - centers[lo_i - 1] <= limit {
+        lo_i -= 1;
+    }
+    while hi_i + 1 < centers.len() && centers[hi_i + 1] - centers[hi_i] <= limit {
+        hi_i += 1;
+    }
+    let (lo, hi) = (centers[lo_i], centers[hi_i]);
+    if hi_i - lo_i < 3 || typical < 2.0 {
         return None;
     }
-    Some(((m - lo) / (hi - lo) * 100.0).clamp(0.0, 100.0))
+    // De stand is de plek van de gekleurde streep, geteld vanaf het eerste streepje. FM27 tekent
+    // 11 plekken; staat een deel van de balk in ruis (de doorschijnende achtergrond van het paneel),
+    // dan blijft dat aantal het uitgangspunt.
+    let chain = ((hi - lo) / typical).round() as usize + 1;
+    let n = if chain >= 10 { chain } else { 11 };
+    let idx = ((m - lo) / typical).round().max(0.0);
+    Some((idx / (n - 1) as f32 * 100.0).clamp(0.0, 100.0))
 }
 
 // ---------------------------------------------------------------- analyse
@@ -535,7 +608,16 @@ pub fn analyze_file(path: &std::path::Path) -> Result<(Analysis, Vec<OcrLine>)> 
 
 pub fn analyze_screen() -> Result<(Analysis, RgbaImage)> {
     let img = capture_fm_window()?;
+    // de opname bewaren, zodat een verkeerde uitlezing achteraf na te spelen is:
+    // `fm27-trainer analyze "<map>\last-capture.png" --ocr`
+    let dir = crate::data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = img.save(dir.join("last-capture.png"));
     let (a, _) = analyze_image(&img)?;
+    if a.gauges.len() >= 4 {
+        // de laatste opname waarop echt een Breakdown stond, blijft bewaard
+        let _ = img.save(dir.join("last-breakdown.png"));
+    }
     if a.gauges.len() < 4 {
         bail!(
             "{}",

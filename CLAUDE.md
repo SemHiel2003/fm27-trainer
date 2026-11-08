@@ -15,7 +15,10 @@ Een Rust-app (egui) voor Football Manager 27:
    verkopen** aan een andere club.
 
 Repo's (GitHub `SemHiel2003`):
-- `fm27-trainer`: **openbaar**, release v0.2.0 (genotariseerde Mac-DMG + Windows-zip). Daar níét zomaar naar pushen.
+- `fm27-trainer`: **openbaar**, releases v0.2.0 (genotariseerde Mac-DMG + Windows-zip) en v0.2.1 (8 nov 2026, Windows-zip via
+  GitHub Actions; de Mac-DMG komt van `./release.sh` op de Mac). Daar níét zomaar naar pushen; de dev-repo is er een
+  voorouder van (fast-forward), en de release ontstaat door een tag `v*` naar de openbare repo te pushen (notes in
+  `docs/releases/<tag>.md`).
 - `fm27-trainer-dev`: **privé**, deze repo, met het nieuwste werk (verkopen, onderzoek biedingen, datumfix).
 
 ## Opbouw
@@ -56,6 +59,12 @@ Alle opdrachten van de module: `ping`, `club`, `squad`, `set_finances`, `heal`, 
   met de release-exe), zie `tools/research/fmq.py`.
 - De Mac-DMG kan alleen op de Mac (`./release.sh`, Developer ID + notarisatie). Windows-zip: GitHub Actions
   (`.github/workflows/release.yml`, bij een tag `v*` of handmatig met `platform=windows`).
+- Op deze pc (8 nov 2026 geïnstalleerd): rustup (`%USERPROFILE%\.cargo\bin`), VS Build Tools 2022 (MSVC 14.44,
+  SDK 10.0.26100) en Python 3.12 (`%LOCALAPPDATA%\Programs\Python\Python312`); beide mappen staan op het
+  gebruikers-PATH (een al open terminal ziet dat pas na een herstart). Python met `-X utf8` draaien, anders
+  struikelt de console over accenten in spelersnamen.
+- De agent-crate wordt ook in de debug-build geoptimaliseerd (`[profile.dev.package.fm27-agent]` in Cargo.toml):
+  zonder dat duurt een heap-scan ruim een minuut in plaats van 1,5 s.
 
 ## Hoe live werkt op Windows
 
@@ -63,9 +72,16 @@ Alle opdrachten van de module: `ping`, `club`, `squad`, `set_finances`, `heal`, 
   en leest/schrijft van buitenaf. FM gewoon via Steam starten; geen module of injectie.
 - De native kern heet `game_plugin.dll`. Een build heet `PE-<linktijd>-<SizeOfImage>`; Steam 26340721 =
   `PE-6AE565AF-1821C000`. Onbekende build → geen vaste adressen (staflijst, clublijst, datum).
-- **Schrijven staat op Windows uit** (`writes_tested: false` in `BUILDS`, `agent/src/game.rs`), tot iemand het live
-  heeft gecontroleerd. De gebruiker kan het per sessie toestaan (Instellingen → "Aanpassen op een niet-geteste
-  FM-versie" → opdracht `allow_untested`).
+- **Schrijven staat op Windows aan** voor Steam-build 26340721 (`writes_tested: true` in `BUILDS`,
+  `agent/src/game.rs`; live gecontroleerd op 8 nov 2026). Op een onbekende build (na een FM-patch) staat de app op
+  alleen lezen; de gebruiker kan het per sessie toestaan (Instellingen → "Aanpassen op een niet-geteste FM-versie" →
+  opdracht `allow_untested`).
+- `game_plugin.dll` is **ingepakt**: secties heten `.xtext`, `.data1`, `.shared`, `.rodata`, `.sbss` (307 MB, wordt
+  bij het laden gevuld), `.rdata` (klein). De MSVC-RTTI-zoeker doorzoekt daarom alle secties behalve
+  bronnen/relocaties/debug/imports (`msvc_areas` in `agent/src/rtti.rs`); een blok dat niet in één keer leesbaar is,
+  wordt in kleinere stukken geprobeerd (`mem::for_each_chunk`). `class_of` op het managerobject zelf geeft None
+  (vbptr); de manager wordt via de staflijst gevonden. Een klasse opzoeken kost eenmalig ~1,5 s, een volledige
+  heap-scan (3,5 GB) ~1,5 s in een release-build.
 
 ## Veiligheidsregels (altijd)
 
@@ -114,10 +130,10 @@ Vaste plekken (RVA in game_plugin):
 De manager wordt gevonden via de staflijst (Windows eerst) of RTTI `db::HUMAN_NON_PLAYER`.
 **Spel-datum:** altijd de vaste plek; team+0xA0→+0x94 is een ándere datum (rond de laatste wedstrijd).
 
-**Training** (alleen op macOS gemeten): een blok per team met de team-pointer en op **+0x28** een lijst van weekrecords
-(0x60 bytes: `+0x00` naam van het schema (FM-string), `+0x0C` maandag, `+0x10` 7 × [u16 0, sessie 1, sessie 2,
-extra]). Op Windows probeert de code eerst 0x28, dan 0x08–0x80 met strenge controles; **de echte afstand op Windows
-is nog niet gemeten**. Sessiecodes: 0–7 Tactical Understanding, 100–108 Match Preparation, 200–228 Footballing
+**Training** (gemeten op macOS én Windows, beide **+0x28**): een blok per team met de team-pointer en op +0x28 een
+lijst van weekrecords (0x60 bytes: `+0x00` naam van het schema (FM-string), `+0x0C` maandag, `+0x10` 7 × [u16 0,
+sessie 1, sessie 2, extra]). Op Windows probeert de code voor de zekerheid ook 0x08–0x80 met strenge controles,
+voor het geval een latere build afwijkt. Sessiecodes: 0–7 Tactical Understanding, 100–108 Match Preparation, 200–228 Footballing
 Development, 300–307 Physical, 400 Team Bonding, 401 Community, 402 reizen, 500 wedstrijd.
 
 **Opstellingen**: `simatch::PREPARED_TACTICS_CREATOR_ARRAY`, `+0x08` lijst, `+0x28` 26 × u32 persoons-id
@@ -127,12 +143,18 @@ Development, 300–307 Physical, 400 Team Bonding, 401 Community, 402 reizen, 50
 
 | | macOS (live, Ajax-save) | Windows |
 |---|---|---|
-| uitlezen club/selectie/kalender | ✅ | alleen simulatie + CI-build |
-| budget, genezen, moraal, training schrijven, undo | ✅ | alleen simulatie |
-| verkopen (`sell`) | alleen simulatie | alleen simulatie |
-| MSVC-RTTI | n.v.t. | ✅ tegen een echte MSVC-DLL (testdata) |
+| uitlezen club/selectie/kalender | ✅ | ✅ (8 nov 2026, Ajax-save) |
+| budget, genezen, moraal, training schrijven, undo | ✅ | ✅ (8 nov 2026) |
+| verkopen (`sell`) | alleen simulatie | ✅ dry run én één echte verkoop + undo (8 nov 2026) |
+| MSVC-RTTI | n.v.t. | ✅ testdata én live (census, opstellingen) |
 
-## Taak 1: Windows live controleren (prioriteit)
+## Taak 1: Windows live controleren — gedaan (8 nov 2026)
+
+Alle stappen hieronder zijn op Steam-build 26340721 doorlopen en groen: lezen klopte met FM (club, saldo, budgetten,
+datum, selectie, kalender), en `set_finances`, `inspire`, `heal`, `set_week` en `sell` (dry run én één echte
+verkoop) werkten elk met `undo`. Gevonden en opgelost: de RTTI-zoeker keek alleen in `.data`/`.rdata` (ingepakte
+DLL, zie boven) waardoor verkopen faalde, en de debug-build was ~40x te traag. Na een FM-patch (build onbekend:
+`known_build false`) dezelfde procedure opnieuw doen.
 
 Gebruik een test-save. Start FM27 via Steam, laad de save, dan:
 
@@ -175,9 +197,26 @@ Opties, met de gebruiker gekozen route nog open:
 FM27 gebruikt nepnamen voor clubs zonder licentie: AC Milan = **Casciavit Milano** (UID 1099), Inter =
 **Blu-neri Milano** (UID 1135). Handig voor het zoekveld in de app (aliassen?).
 
+## Schermuitlezing (Breakdown) op Windows, gemeten 8 nov 2026
+
+- Elke taartmeter heeft **10 segmenten**, gevuld met de klok mee vanaf 12 uur; het lege deel is **bijna wit**
+  (s < 0,25, v > 0,66), de spaken zijn ook licht, de achtergrond van een gemarkeerde rij is middelgrijs
+  (s ≈ 0,12, v ≈ 0,34) en viel vroeger onder "meter-grijs". De score is nu het aantal gevulde segmenten × 10
+  (laatste echt gekleurde sector, afgerond op een segment); de tint (oranje laag, geel midden, groen hoog) wordt
+  alleen bewaard. Balken: 11 plekken, één gekleurde (de stand) en één witte streep; stand = plek vanaf het
+  eerste streepje / 10. De doorschijnende paneelachtergrond kan een deel van de streepjes in ruis zetten.
+- Windows-OCR leest "Player Buy-In" als "Player Buy-ln" (alias in `model.rs`).
+- Elke uitlezing bewaart `last-capture.png` en, als er een Breakdown op stond, `last-breakdown.png` in
+  `%APPDATA%\FM27 Trainer`; naspelen met `target\debug\fm27-trainer.exe analyze <png> --ocr`. Hulpscripts om
+  pixels te bekijken stonden in de scratchpad van de sessie (pie_debug.py, montage.py); zo nodig opnieuw maken
+  met Pillow (`python -m pip install --user pillow`).
+
 ## Overig
 
 - Ondertekenen Mac: Developer ID "Sem Hiel (SFV4V5SHM4)", notarytool-profiel `fm27-notary` (alleen op de Mac).
 - De Windows-exe is niet ondertekend (SmartScreen: "Meer info → Toch uitvoeren").
 - Testhulpen GUI: `FM27_PAGE=training|planning|club|squad|sell|settings`, `FM27_LANG=nl|en`,
   `FM27_SNAPSHOT=pad.png` (schermafbeelding van het eigen venster, dan afsluiten), `FM27_WINDOW=1320x1000`.
+  Met `FM27_SNAPSHOT` slaat de app het automatisch bijhouden van training over (sinds 8 nov 2026): een testopname
+  schrijft nooit in FM. Zonder die variabele schrijft een gestarte app met "automatisch bijhouden" aan binnen
+  enkele seconden het trainingsplan in FM; houd daar rekening mee bij tests tegen een echte save.

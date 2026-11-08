@@ -6,3 +6,8 @@ members = ["agent","app"]
 opt-level = 3
 lto = "thin"
 strip = true
+
+# De spellogica (heap-scans over het hele geheugen van FM) is in een onge-optimaliseerde debug-build
+# ~40x trager (minuten in plaats van seconden): ook in `cargo run` geoptimaliseerd bouwen.
+[profile.dev.package.fm27-agent]
+opt-level = 3

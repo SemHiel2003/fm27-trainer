@@ -248,10 +248,11 @@ impl App {
         self.set_status(t!("Bezig met uitlezen…", "Reading…"), false);
     }
 
-    fn poll_analysis(&mut self) {
+    fn poll_analysis(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.analysis_rx else { return };
         if let Ok(res) = rx.try_recv() {
             self.analysis_rx = None;
+            let _ = ctx;
             match res {
                 Ok((a, src)) => {
                     let when = chrono::Local::now().format("%d-%m %H:%M");
@@ -1283,7 +1284,10 @@ impl App {
                         } else {
                             t!(format!("{} heeft geen volledige financiën in je save: alleen jij krijgt het geld.", s("to")), format!("{} has no full finances in your save: only you receive the money.", s("to")))
                         });
-                        lines.push(t!(format!("Jouw saldo wordt {}.", eur(i("balance_after"))), format!("Your balance becomes {}.", eur(i("balance_after")))));
+                        lines.push(t!(
+                            format!("Jouw saldo wordt {} en je transferbudget {}.", eur(i("balance_after")), eur(i("transfer_budget_after"))),
+                            format!("Your balance becomes {} and your transfer budget {}.", eur(i("balance_after")), eur(i("transfer_budget_after")))
+                        ));
                         if i("selections") > 0 {
                             lines.push(t!(format!("Zijn plek in {} opstelling(en) wordt leeg.", i("selections")), format!("His place in {} selection(s) is emptied.", i("selections"))));
                         }
@@ -1452,7 +1456,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.snapshot(ctx);
-        self.poll_analysis();
+        self.poll_analysis(ctx);
         self.live.allow_untested = self.settings.allow_untested;
         self.live.tick(ctx, &self.eff, &self.settings.planner, self.settings.auto_training);
         self.sidebar(ctx);

@@ -87,23 +87,22 @@ fn sections<'a>(img: &'a Image, pred: impl Fn(&str) -> bool + 'a) -> impl Iterat
 /// 8-byte-waarden uit `wanted` in de gegeven gebieden; geeft (adres, waarde zonder bit 63).
 fn find_qwords(areas: &[(u64, u64)], wanted: &HashSet<u64>) -> Vec<(u64, u64)> {
     let mut out = Vec::new();
-    let chunk: u64 = 16 << 20;
+    if wanted.is_empty() {
+        return out;
+    }
     for (s, e) in areas {
-        let mut a = *s;
-        while a < *e {
-            let n = (*e - a).min(chunk);
-            if let Some(buf) = mem::read_bytes(a, n as usize) {
-                for (i, c) in buf.chunks_exact(8).enumerate() {
-                    let v = u64::from_le_bytes(c.try_into().unwrap());
-                    let masked = v & !(1u64 << 63);
-                    if wanted.contains(&v) || wanted.contains(&masked) {
-                        out.push((a + i as u64 * 8, masked));
-                    }
+        mem::for_each_chunk(*s, *e, 16 << 20, 0, &mut |a, buf| {
+            for (i, c) in buf.chunks_exact(8).enumerate() {
+                let v = u64::from_le_bytes(c.try_into().unwrap());
+                let masked = v & !(1u64 << 63);
+                if wanted.contains(&v) || wanted.contains(&masked) {
+                    out.push((a + i as u64 * 8, masked));
                 }
             }
-            a += n;
-        }
+        });
     }
+    out.sort_unstable();
+    out.dedup();
     out
 }
 
@@ -225,34 +224,34 @@ fn msvc_class_name(obj: u64) -> Option<String> {
     (name.starts_with(".?A") && name.is_ascii()).then_some(name)
 }
 
-/// Complete Object Locators in .rdata die aan `pred(td_rva, offset)` voldoen: (adres, td_rva).
+/// Waar de RTTI van MSVC (TypeDescriptors, Complete Object Locators, vtables) kan staan. Een gewone
+/// DLL houdt ze in .data en .rdata, maar FM27's game_plugin.dll is ingepakt (secties .xtext, .data1,
+/// .rodata, .sbss, …) en legt ze pas bij het laden neer: daarom alle secties, behalve wat zeker
+/// geen RTTI is (bronnen, relocaties, debug-informatie, importtabellen).
+fn msvc_areas(img: &Image) -> Vec<(u64, u64)> {
+    const SKIP: &[&str] = &[".rsrc", ".reloc", ".pdata", ".idata", ".didata", ".debug", ".tls", ".gfids", ".00cfg"];
+    sections(img, |n| !SKIP.contains(&n)).collect()
+}
+
+/// Complete Object Locators in het image die aan `pred(td_rva, offset)` voldoen: (adres, td_rva).
 fn msvc_locators(img: &Image, pred: impl Fn(u32, u32) -> bool) -> Vec<(u64, u32)> {
     let base = img.start;
     let mut out = Vec::new();
-    let chunk: u64 = 16 << 20;
-    for (s, e) in sections(img, |n| n == ".rdata") {
-        let mut a = s;
-        while a < e {
-            let n = (e - a).min(chunk + 24);
-            if let Some(buf) = mem::read_bytes(a, n as usize) {
-                let u = |i: usize| u32::from_le_bytes(buf[i..i + 4].try_into().unwrap());
-                let mut i = ((4 - (a % 4)) % 4) as usize;
-                while i + 24 <= buf.len() {
-                    if u(i) == 1 {
-                        let pos = a + i as u64;
-                        let (offset, td, me) = (u(i + 4), u(i + 12), u(i + 20));
-                        if me as u64 == pos - base && pred(td, offset) {
-                            out.push((pos, td));
-                        }
+    for (s, e) in msvc_areas(img) {
+        mem::for_each_chunk(s, e, 16 << 20, 24, &mut |a, buf| {
+            let u = |i: usize| u32::from_le_bytes(buf[i..i + 4].try_into().unwrap());
+            let mut i = ((4 - (a % 4)) % 4) as usize;
+            while i + 24 <= buf.len() {
+                if u(i) == 1 {
+                    let pos = a + i as u64;
+                    let (offset, td, me) = (u(i + 4), u(i + 12), u(i + 20));
+                    if me as u64 == pos - base && pred(td, offset) {
+                        out.push((pos, td));
                     }
-                    i += 4;
                 }
+                i += 4;
             }
-            if n <= 24 {
-                break;
-            }
-            a += n - 24;
-        }
+        });
     }
     out.sort_unstable();
     out.dedup();
@@ -261,13 +260,12 @@ fn msvc_locators(img: &Image, pred: impl Fn(u32, u32) -> bool) -> Vec<(u64, u32)
 
 /// vtables die naar deze locators wijzen (`[vtable-8]` = locator).
 fn msvc_vtables_for(img: &Image, locators: &HashSet<u64>) -> Vec<(u64, u64)> {
-    let rdata: Vec<(u64, u64)> = sections(img, |n| n == ".rdata").collect();
-    find_qwords(&rdata, locators).into_iter().map(|(loc, col)| (loc + 8, col)).collect()
+    find_qwords(&msvc_areas(img), locators).into_iter().map(|(loc, col)| (loc + 8, col)).collect()
 }
 
 fn msvc_vtables_of(img: &Image, names: &[String]) -> Vec<u64> {
     let base = img.start;
-    let data: Vec<(u64, u64)> = sections(img, |n| n == ".data" || n == ".rdata").collect();
+    let data = msvc_areas(img);
     let mut tds: HashSet<u32> = HashSet::new();
     for n in names {
         let mut needle = n.as_bytes().to_vec();
@@ -294,7 +292,7 @@ fn msvc_vtables_of(img: &Image, names: &[String]) -> Vec<u64> {
 fn msvc_census(img: &Image, filter: &str, max_classes: usize) -> Vec<(String, Vec<u64>)> {
     let base = img.start;
     let mut td_name: HashMap<u32, String> = HashMap::new();
-    for (s, e) in sections(img, |n| n == ".data" || n == ".rdata") {
+    for (s, e) in msvc_areas(img) {
         for prefix in [b".?AV", b".?AU"] {
             for hit in mem::find_in(s, e, prefix) {
                 if td_name.len() >= max_classes {

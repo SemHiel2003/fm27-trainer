@@ -11,7 +11,7 @@
 
 <p align="center">
   <img alt="macOS" src="https://img.shields.io/badge/macOS-13%2B-000?logo=apple">
-  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2F11%20(beta)-0078D4?logo=windows">
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows">
   <img alt="FM27" src="https://img.shields.io/badge/Football%20Manager-27-c8102e">
   <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-7c6cff">
@@ -82,9 +82,9 @@ top. Every change can be undone, and it only sticks once you save in FM.
 2. Start FM27 as usual (or with *Start FM27* in the app) and load your save. The app reads `fm.exe` directly, so
    there is nothing to install and no module to load.
 
-> **Beta.** Everything works on Windows, but the Windows build of FM27 has not been live-tested yet, so the app
-> starts read-only. Check that club, budget and squad match what FM shows, back up your save, then turn on
-> *Allow changes on an untested FM build* in Settings.
+> Live-tested on the Steam build of November 2026 (26340721): reading, budgets, morale, injuries, training and
+> selling, each with undo. After an FM patch the app is read-only until the new build has been checked; you can
+> allow changes yourself in Settings (back up your save first).
 
 ## How it works
 
@@ -100,8 +100,8 @@ More detail, including memory layouts and file formats: [docs/TECHNICAL.md](docs
 
 - **Single-player only.** The app never touches online play.
 - **Verified builds only.** The module writes only on FM builds whose layout has been measured and tested. On an
-  untested build (the Windows version for now, or after an FM patch) it is read-only until you allow changes in
-  Settings.
+  untested build (after an FM patch, until the new layout has been checked) it is read-only until you allow changes
+  in Settings.
 - **Undo** for every change, and **Back up saves** with one click (`~/Documents/FM27 Trainer/backups`).
 - Nothing leaves your machine: no account, no telemetry, no network calls.
 
@@ -125,7 +125,6 @@ FM), `tools/` (scripts for FM's `.fmf` archives and binary JSON), `docs/`.
 ## Roadmap
 
 - An in-app update check.
-- Live-test the Windows build, so changes no longer need to be allowed by hand.
 - Reading Tactical Effectiveness straight from memory instead of the screen.
 
 ## Credits

@@ -35,7 +35,8 @@ impl Component {
         match self {
             Component::TacticalUnderstanding => &["tactical understanding"],
             Component::PlayerAbility => &["player ability"],
-            Component::PlayerBuyIn => &["player buy-in", "player buy in", "player buyin"],
+            // Windows-OCR leest de hoofdletter I in "Buy-In" als een kleine l
+            Component::PlayerBuyIn => &["player buy-in", "player buy in", "player buyin", "player buy ln", "player buy-ln"],
             Component::NextMatchInfo => &["next match info", "next match information"],
         }
     }

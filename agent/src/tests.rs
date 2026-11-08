@@ -361,7 +361,8 @@ fn windows_layout_end_to_end() {
     run_world(&game::WIN, &w);
     let ping = call(json!({"cmd": "ping"})).unwrap();
     assert_eq!(ping["platform"], "windows");
-    assert_eq!(ping["known_build"], false, "Windows is nog niet live getest");
+    assert_eq!(ping["known_build"], true, "de Windows-build is live getest (8 nov 2026)");
+    assert_eq!(ping["untested_writes"], false, "op de geteste Windows-build is geen toestemming nodig");
 }
 
 #[test]
@@ -705,6 +706,7 @@ fn run_market(l: &'static Layout, m: &Market) {
     assert_eq!(plan["was_captain"], true);
     assert_eq!(plan["buyer_pays"], true);
     assert_eq!(plan["balance_after"], 35_000_000);
+    assert_eq!(plan["transfer_budget_after"], 22_000_000, "de som komt ook in je transferbudget");
     assert_eq!(plan["to"], "AC Milan");
     assert!(snapshot() == before, "een controle schrijft niets");
 
@@ -750,6 +752,7 @@ fn run_market(l: &'static Layout, m: &Market) {
     assert_eq!(mem::u32_at(m.our_selection + 0x28), Some(5003), "de rest blijft staan");
     assert_eq!(mem::u32_at(m.national_selection + 0x28 + 4), Some(5001), "nationaal team blijft");
     assert_eq!(mem::i32_at(m.finance + 0x0C), Some(35_000_000));
+    assert_eq!(mem::i32_at(m.finance + 0x7C4), Some(22_000_000), "transferbudget groeit met de som");
     assert_eq!(mem::i32_at(m.milan_finance + 0x0C), Some(90_000_000));
     assert_eq!(mem::i32_at(m.milan_finance + 0x7C4), Some(20_000_000));
     let squad = call(json!({"cmd": "squad"})).unwrap();

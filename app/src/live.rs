@@ -380,7 +380,9 @@ impl LiveState {
         // automatische modus: alle komende weken volgens plan houden. FM bouwt een week opnieuw op als
         // de wedstrijden erin veranderen (loting, verplaatsing); dat zetten we hier weer recht.
         let read_only = self.untested_build && !self.allow_untested;
-        if auto && self.connected && !read_only && !self.busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 8) {
+        // een testopname (FM27_SNAPSHOT) mag nooit iets in FM veranderen
+        let snapshot = std::env::var_os("FM27_SNAPSHOT").is_some();
+        if auto && !snapshot && self.connected && !read_only && !self.busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 8) {
             self.last_auto = Some(Instant::now());
             self.training_job(ctx, eff, settings, true, false, true);
         }

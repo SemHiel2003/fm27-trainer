@@ -61,9 +61,9 @@ in FM's trainingskalender, week na week.
 2. Start FM27 zoals altijd (of met *Start FM27* in de app) en laad je save. De app leest `fm.exe` rechtstreeks: er
    hoeft niets geïnstalleerd of meegestart te worden.
 
-> **Bèta.** Alles werkt op Windows, maar de Windows-versie van FM27 is nog niet live getest, dus de app begint op
-> alleen lezen. Kloppen club, budget en selectie met wat FM laat zien? Maak een backup van je save en zet dan in
-> Instellingen *Aanpassen op een niet-geteste FM-versie* aan.
+> Live getest op de Steam-build van november 2026 (26340721): uitlezen, budget, moraal, blessures, training en
+> verkopen, elk met ongedaan maken. Na een FM-patch staat de app op alleen lezen tot de nieuwe build is
+> gecontroleerd; aanpassen kun je dan zelf toestaan in Instellingen (maak eerst een backup van je save).
 
 ## Hoe het werkt
 
@@ -76,8 +76,8 @@ in FM's trainingskalender, week na week.
 ## Veiligheid
 
 - **Alleen single-player.**
-- **Alleen geteste builds.** Op een niet-geteste build (voorlopig de Windows-versie, of na een FM-patch) staat de
-  app op alleen lezen, tot je aanpassen zelf toestaat in Instellingen.
+- **Alleen geteste builds.** Op een niet-geteste build (na een FM-patch, tot de nieuwe indeling is gecontroleerd)
+  staat de app op alleen lezen, tot je aanpassen zelf toestaat in Instellingen.
 - **Ongedaan maken** voor elke wijziging en **Backup saves** met één klik.
 - Er gaat niets van je computer af: geen account, geen telemetrie.
 

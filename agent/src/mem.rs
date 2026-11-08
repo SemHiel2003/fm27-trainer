@@ -230,28 +230,46 @@ pub fn scan_bytes(pattern: &[u8], align: usize, limit: usize) -> Vec<u64> {
     hits
 }
 
+/// Loopt in blokken van `chunk` bytes (met `overlap` bytes overlap) door [start, end) en roept
+/// `f(adres, bytes)` aan. Een blok dat niet in één keer leesbaar is (een gat in een ingepakte
+/// DLL, een bewaakte pagina) wordt in kleinere stukken geprobeerd, tot een pagina.
+pub fn for_each_chunk(start: u64, end: u64, chunk: usize, overlap: usize, f: &mut dyn FnMut(u64, &[u8])) {
+    if end <= start {
+        return;
+    }
+    let mut a = start;
+    while a < end {
+        let n = ((end - a) as usize).min(chunk + overlap);
+        match read_bytes(a, n) {
+            Some(buf) => f(a, &buf),
+            None if chunk > 0x1000 => for_each_chunk(a, a + n as u64, chunk / 16, overlap, f),
+            None => {}
+        }
+        if n <= overlap {
+            break;
+        }
+        a += (n - overlap) as u64;
+    }
+}
+
 /// Zoekt `needle` in [start, end) van een image (in blokken, met overlap). Geeft de adressen.
 pub fn find_in(start: u64, end: u64, needle: &[u8]) -> Vec<u64> {
     let mut hits = Vec::new();
     if needle.is_empty() || end <= start {
         return hits;
     }
-    let chunk = 16 << 20;
-    let mut a = start;
-    while a < end {
-        let n = ((end - a) as usize).min(chunk + needle.len());
-        if let Some(buf) = read_bytes(a, n) {
-            let mut i = 0;
-            while let Some(p) = buf[i..].windows(needle.len()).position(|w| w == needle) {
-                hits.push(a + (i + p) as u64);
-                i += p + 1;
+    let first = needle[0];
+    for_each_chunk(start, end, 16 << 20, needle.len(), &mut |a, buf| {
+        let mut i = 0;
+        while i + needle.len() <= buf.len() {
+            let Some(p) = buf[i..].iter().position(|b| *b == first) else { break };
+            let j = i + p;
+            if j + needle.len() <= buf.len() && buf[j..j + needle.len()] == *needle {
+                hits.push(a + j as u64);
             }
+            i = j + 1;
         }
-        if n <= needle.len() {
-            break;
-        }
-        a += (n - needle.len()) as u64;
-    }
+    });
     hits.sort_unstable();
     hits.dedup();
     hits

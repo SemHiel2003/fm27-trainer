@@ -66,9 +66,10 @@ pub const MAC: Layout = Layout {
     heap_blocks: &[144, 160, 192, 224, 256, 288, 320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536, 2048, 2560, 3072, 3584, 4096],
 };
 
-/// Windows (MSVC), FMLibreEditor layout.toml (geverifieerd op de Steam- en Game Pass-builds):
-/// de eigen velden van een speler liggen 8 verder (vbptr), het persoonsblok 0x40 verder en het
-/// identiteitsblok, waar contracten naar wijzen, komt vóór de persoon.
+/// Windows (MSVC), FMLibreEditor layout.toml (geverifieerd op de Steam- en Game Pass-builds), door dit
+/// project live getest op Steam-build 26340721 (8 nov 2026): de eigen velden van een speler liggen
+/// 8 verder (vbptr), het persoonsblok 0x40 verder en het identiteitsblok, waar contracten naar
+/// wijzen, komt vóór de persoon.
 pub const WIN: Layout = Layout {
     staff_contract: 0x1A8,
     staff_identity: 0x100,
@@ -145,8 +146,9 @@ pub struct Build {
 pub const BUILDS: &[Build] = &[
     // gemeten en live getest (7 nov 2026); RVA's uit FMLibreEditor steam-26340721-macos-arm64.toml
     Build { id: "F4540355-2186-39CB-9119-C706A6A35346", label: "Steam 26340721 macOS arm64", writes_tested: true, current_date: 0x56B1DB8, staff: 0x56D2E60, clubs: 0x56D2FD0 },
-    // FMLibreEditor steam-26340721.toml: game_plugin.dll met SizeOfImage 0x1821C000 en linktijd 0x6AE565AF
-    Build { id: "PE-6AE565AF-1821C000", label: "Steam 26340721 Windows", writes_tested: false, current_date: 0x56AF378, staff: 0x5705818, clubs: 0x5705988 },
+    // FMLibreEditor steam-26340721.toml: game_plugin.dll met SizeOfImage 0x1821C000 en linktijd 0x6AE565AF;
+    // live getest (8 nov 2026, Ajax-save): uitlezen, budget, moraal, genezen, training, verkopen, undo
+    Build { id: "PE-6AE565AF-1821C000", label: "Steam 26340721 Windows", writes_tested: true, current_date: 0x56AF378, staff: 0x5705818, clubs: 0x5705988 },
 ];
 
 /// Aanpassen toestaan op een build die (nog) niet live getest is; de gebruiker zet dit zelf aan.
@@ -711,9 +713,10 @@ pub fn inspire(uids: &Option<Vec<u32>>, morale: u8, clear_unhappiness: bool) -> 
 //   +0x00 pointer naar de naam van het schema (FM-string)
 //   +0x0C u16 dag-van-het-jaar (lage 9 bits) + u16 jaar  (maandag van de week)
 //   +0x10 7 dagblokken van 8 bytes: u16 0, u16 sessie 1, u16 sessie 2, u16 extra
-// Gemeten op FM27 macOS (Steam-build 26340721) en gecontroleerd tegen de kalender in de save.
-// Op Windows is de afstand nog niet gemeten: de app zoekt hem (eerst 0x28) en controleert
-// de weeklijst streng (geldige datums, precies een week uit elkaar, geldige sessiecodes).
+// Gemeten op FM27 macOS (Steam-build 26340721) en gecontroleerd tegen de kalender in de save; op
+// Windows (8 nov 2026) live gemeten: dezelfde afstand 0x28. Voor het geval een build afwijkt, zoekt
+// de app op Windows ook 0x08–0x80 af, met een strenge controle van de weeklijst (geldige datums,
+// precies een week uit elkaar, geldige sessiecodes).
 
 const TB_WEEKS: u64 = 0x28;
 const WEEK_DATE: u64 = 0x0C;
