@@ -1,0 +1,4 @@
+# Windows: de C-runtime in de exe inbouwen, zodat FM27 Trainer.exe ook start zonder de
+# Visual C++ Redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

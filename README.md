@@ -11,7 +11,7 @@
 
 <p align="center">
   <img alt="macOS" src="https://img.shields.io/badge/macOS-13%2B-000?logo=apple">
-  <img alt="Windows" src="https://img.shields.io/badge/Windows-planning%20%26%20analysis-0078D4?logo=windows">
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2F11%20(beta)-0078D4?logo=windows">
   <img alt="FM27" src="https://img.shields.io/badge/Football%20Manager-27-c8102e">
   <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-7c6cff">
@@ -77,8 +77,14 @@ top. Every change can be undone, and it only sticks once you save in FM.
 
 ### Windows
 
-Reading, planning and export work on Windows (Windows.Media.Ocr is used for reading). The live module
-(training into FM, club and squad tools) is macOS-only for now.
+1. Download `FM27-Trainer-Windows.zip` from [Releases](../../releases), unzip it and run **FM27 Trainer.exe**. The
+   exe is not code-signed yet: if SmartScreen warns, click *More info → Run anyway*.
+2. Start FM27 as usual (or with *Start FM27* in the app) and load your save. The app reads `fm.exe` directly, so
+   there is nothing to install and no module to load.
+
+> **Beta.** Everything works on Windows, but the Windows build of FM27 has not been live-tested yet, so the app
+> starts read-only. Check that club, budget and squad match what FM shows, back up your save, then turn on
+> *Allow changes on an untested FM build* in Settings.
 
 ## How it works
 
@@ -86,7 +92,7 @@ Reading, planning and export work on Windows (Windows.Media.Ocr is used for read
 |---|---|
 | Screen reading | Captures the FM window, finds the 17 factor labels with OCR (Apple Vision / Windows OCR) and measures each pie gauge: FM fills it clockwise from 12 o'clock and colours it from red to green. |
 | Planner | Uses the 59 training sessions and 99 presets from FM27's own game data (names, weekly limits, effects). It keeps SI's rhythm around matches and allocates the tactical slots by deficit, re-targeting every few weeks. |
-| Live module | A small library that starts with FM (the same approach as [FMSuperScout](https://github.com/mavarobli/FMSuperScout)). It finds the game's objects by their C++ class names and only reads or writes when the app asks, after checking the memory still holds what it expects. |
+| Live module | On macOS a small library that starts with FM (the same approach as [FMSuperScout](https://github.com/mavarobli/FMSuperScout)); on Windows the app reads `fm.exe` directly. It finds the game's objects by their C++ class names and the game's own tables, and only reads or writes when the app asks, after checking the memory still holds what it expects. |
 
 More detail, including memory layouts and file formats: [docs/TECHNICAL.md](docs/TECHNICAL.md).
 
@@ -94,7 +100,8 @@ More detail, including memory layouts and file formats: [docs/TECHNICAL.md](docs
 
 - **Single-player only.** The app never touches online play.
 - **Verified builds only.** The module writes only on FM builds whose layout has been measured and tested. On an
-  unknown build (after an FM patch) it switches to read-only and the app tells you.
+  untested build (the Windows version for now, or after an FM patch) it is read-only until you allow changes in
+  Settings.
 - **Undo** for every change, and **Back up saves** with one click (`~/Documents/FM27 Trainer/backups`).
 - Nothing leaves your machine: no account, no telemetry, no network calls.
 
@@ -117,8 +124,8 @@ FM), `tools/` (scripts for FM's `.fmf` archives and binary JSON), `docs/`.
 
 ## Roadmap
 
-- Notarised releases and an in-app update check.
-- Windows live module (the Windows build lays objects out differently; it needs its own measurements).
+- An in-app update check.
+- Live-test the Windows build, so changes no longer need to be allowed by hand.
 - Reading Tactical Effectiveness straight from memory instead of the screen.
 
 ## Credits

@@ -1,15 +1,24 @@
 # Technical notes
 
-Everything here was measured on **FM27, Steam build 26340721, Apple silicon** (game_plugin LC_UUID
-`F4540355-2186-39CB-9119-C706A6A35346`) and checked against a real save and the running game.
+The macOS side was measured on **FM27, Steam build 26340721, Apple silicon** (game_plugin LC_UUID
+`F4540355-2186-39CB-9119-C706A6A35346`) and checked against a real save and the running game. The Windows side
+uses the same build's layout as published by FMLibreEditor and is tested against simulated memory; it has not
+been live-tested by this project yet, so it is read-only until the user allows changes.
 
 ## Architecture
 
 ```
+macOS
 FM27 Trainer.app ──(Unix socket: one JSON line per request)──▶ libfm27_agent.dylib inside FM27
    │  egui UI, OCR, planner                                      │  RTTI lookup, mach_vm_read/write
    └─ starts FM27 with DYLD_INSERT_LIBRARIES ────────────────────┘  writes only after a check + undo log
+
+Windows
+FM27 Trainer.exe ── same agent code, linked in ──▶ fm.exe (ReadProcessMemory / WriteProcessMemory)
 ```
+
+The agent crate (`agent/`) holds the game logic for both: `mem.rs` (memory access per platform, plus a
+simulated memory for tests), `rtti.rs` (Itanium and MSVC RTTI) and `game.rs` (layouts, builds, commands).
 
 - FM27 on macOS is signed with `com.apple.security.cs.allow-dyld-environment-variables` and
   `disable-library-validation`, so a library can be loaded at launch with SIP enabled. An external reader would
@@ -20,6 +29,31 @@ FM27 Trainer.app ──(Unix socket: one JSON line per request)──▶ libfm27
   type_info, `[type_info+8]` the mangled name (`N2db16HUMAN_NON_PLAYERE`).
 - Writes go through `mach_vm_write` and only happen when the bytes still equal what the agent read. Every write
   is logged for undo. On an unknown `game_plugin` UUID the agent refuses to write.
+
+## Windows
+
+- The app opens `fm.exe` with `PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
+  PROCESS_QUERY_INFORMATION`; FM can be started from Steam as usual. The native core is `game_plugin.dll`; a build
+  is identified by its PE link timestamp and SizeOfImage (`PE-6AE565AF-1821C000` for Steam 26340721).
+- The human manager is found in the game's staff array (the `(begin, end)` pair at RVA `0x5705818`), with MSVC
+  RTTI as a fallback: `[vtable-8]` is the Complete Object Locator, whose TypeDescriptor holds
+  `.?AVHUMAN_NON_PLAYER@db@@`. The in-game date is at RVA `0x56AF378`.
+- Players and staff are laid out differently by MSVC (a vbptr, and the identity block before the person):
+
+| Field | macOS | Windows |
+|---|---|---|
+| Human manager contract / identity (+ `0x340`) | `0x170` / `0x208` | `0x1A8` / `0x100` |
+| Player team, injury record | `0x128`, `0xF0` | `0x130`, `0xF8` |
+| Player sharpness, condition, morale | `0x250`, `0x254`, `0x264` | `0x258`, `0x25C`, `0x26C` |
+| Player names (first, last, common) | `0x298`, `0x2A0`, `0x2A8` | `0x2D8`, `0x2E0`, `0x2E8` |
+| Player contract, identity, UID | `0x2F0`, `0x388`, `0x394` | `0x330`, `0x288`, `0x294` |
+
+  Clubs, finances, contracts, teams, injuries and bans are the same on both. The training calendar block was
+  measured on macOS only; on Windows the agent tries `+0x28` first and then nearby offsets, accepting a list only
+  when every week has a valid date, ascending Mondays and valid session codes.
+- `agent/src/tests.rs` runs every command (club, squad, budgets, heal, bans, morale, training, undo) against a
+  simulated FM for both layouts, and the MSVC RTTI code against `agent/testdata/rtti_test.dll`, a small MSVC-ABI
+  DLL built with clang and lld.
 
 ## Memory layout (macOS)
 

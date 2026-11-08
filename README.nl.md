@@ -56,8 +56,14 @@ in FM's trainingskalender, week na week.
 
 ### Windows
 
-Uitlezen, planning en export werken op Windows (met Windows.Media.Ocr). De live-module (training in FM,
-club en selectie) is voorlopig alleen voor macOS.
+1. Download `FM27-Trainer-Windows.zip` bij [Releases](../../releases), pak hem uit en start **FM27 Trainer.exe**.
+   De exe is nog niet ondertekend: waarschuwt SmartScreen, klik dan op *Meer informatie → Toch uitvoeren*.
+2. Start FM27 zoals altijd (of met *Start FM27* in de app) en laad je save. De app leest `fm.exe` rechtstreeks: er
+   hoeft niets geïnstalleerd of meegestart te worden.
+
+> **Bèta.** Alles werkt op Windows, maar de Windows-versie van FM27 is nog niet live getest, dus de app begint op
+> alleen lezen. Kloppen club, budget en selectie met wat FM laat zien? Maak een backup van je save en zet dan in
+> Instellingen *Aanpassen op een niet-geteste FM-versie* aan.
 
 ## Hoe het werkt
 
@@ -65,12 +71,13 @@ club en selectie) is voorlopig alleen voor macOS.
 |---|---|
 | Scherm uitlezen | Legt het FM-venster vast, vindt de 17 labels met OCR en meet elke taartmeter: FM vult die met de klok mee vanaf 12 uur en kleurt van rood naar groen. |
 | Planner | Gebruikt de 59 sessies en 99 presets uit FM27's eigen game-data (namen, limieten per week, effecten), houdt het ritme van SI rond wedstrijden aan en verdeelt de tactische sessies naar tekort. |
-| Live-module | Een kleine bibliotheek die met FM meestart (zoals [FMSuperScout](https://github.com/mavarobli/FMSuperScout)). Hij vindt de objecten van de game via hun C++-klassenamen en leest of schrijft alleen op verzoek, na controle. |
+| Live-module | Op macOS een kleine bibliotheek die met FM meestart (zoals [FMSuperScout](https://github.com/mavarobli/FMSuperScout)); op Windows leest de app `fm.exe` rechtstreeks. Hij vindt de objecten van de game via hun C++-klassenamen en de tabellen van de game, en leest of schrijft alleen op verzoek, na controle. |
 
 ## Veiligheid
 
 - **Alleen single-player.**
-- **Alleen geteste builds.** Na een FM-patch schakelt de module naar alleen lezen tot de app is bijgewerkt.
+- **Alleen geteste builds.** Op een niet-geteste build (voorlopig de Windows-versie, of na een FM-patch) staat de
+  app op alleen lezen, tot je aanpassen zelf toestaat in Instellingen.
 - **Ongedaan maken** voor elke wijziging en **Backup saves** met één klik.
 - Er gaat niets van je computer af: geen account, geen telemetrie.
 
