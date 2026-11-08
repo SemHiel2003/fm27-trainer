@@ -18,7 +18,9 @@ Repo's (GitHub `SemHiel2003`):
 - `fm27-trainer`: **openbaar**, releases v0.2.0 (genotariseerde Mac-DMG + Windows-zip), v0.2.1 en v0.2.2 (8 nov 2026,
   Windows-zip via GitHub Actions; de Mac-DMG komt van `./release.sh` op de Mac). Daar níét zomaar naar pushen; de dev-repo
   is er een voorouder van (fast-forward), en de release ontstaat door een tag `v*` naar de openbare repo te pushen (notes in
-  `docs/releases/<tag>.md`). Lokaal heet die remote `public`.
+  `docs/releases/<tag>.md`). Lokaal heet die remote `public`. Vaste downloadlinks (altijd de nieuwste release, voor de
+  downloadpagina's elders): `https://github.com/SemHiel2003/fm27-trainer/releases/latest/download/FM27-Trainer-Windows.zip`
+  en `.../FM27-Trainer-macOS.dmg` (de DMG heet sinds 0.2.2 zo, zonder versienummer; de versie staat in de app).
 - `fm27-trainer-dev`: **privé**, deze repo, met het nieuwste werk (verkopen, onderzoek biedingen, datumfix).
 
 ## Opbouw

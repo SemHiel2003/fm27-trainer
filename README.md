@@ -71,7 +71,7 @@ maximise it with one click, like FM's in-game editor does: every player's unders
 
 ### macOS
 
-1. Download `FM27-Trainer-<version>.dmg` from [Releases](../../releases) and drag **FM27 Trainer** to *Applications*.
+1. Download [FM27-Trainer-macOS.dmg](../../releases/latest/download/FM27-Trainer-macOS.dmg) (always the latest version) and drag **FM27 Trainer** to *Applications*.
 2. First launch: allow **Screen Recording** (System Settings → Privacy & Security), so the app can read the Breakdown.
 3. For the live features: save and quit FM, click **Start FM with module** in the app (Steam must be open),
    then load your save. The app connects by itself.
@@ -81,7 +81,7 @@ maximise it with one click, like FM's in-game editor does: every player's unders
 
 ### Windows
 
-1. Download `FM27-Trainer-Windows.zip` from [Releases](../../releases), unzip it and run **FM27 Trainer.exe**. The
+1. Download [FM27-Trainer-Windows.zip](../../releases/latest/download/FM27-Trainer-Windows.zip) (always the latest version), unzip it and run **FM27 Trainer.exe**. The
    exe is not code-signed yet: if SmartScreen warns, click *More info → Run anyway*.
 2. Start FM27 as usual (or with *Start FM27* in the app) and load your save. The app reads `fm.exe` directly, so
    there is nothing to install and no module to load.

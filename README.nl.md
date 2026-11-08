@@ -51,7 +51,7 @@ in FM's trainingskalender, week na week.
 
 ### macOS
 
-1. Download `FM27-Trainer-<versie>.dmg` bij [Releases](../../releases) en sleep **FM27 Trainer** naar *Apps*.
+1. Download [FM27-Trainer-macOS.dmg](../../releases/latest/download/FM27-Trainer-macOS.dmg) (altijd de nieuwste versie) en sleep **FM27 Trainer** naar *Apps*.
 2. Eerste start: sta **Schermopname** toe (Systeeminstellingen → Privacy en beveiliging), zodat de app de
    Breakdown kan uitlezen.
 3. Voor de live-functies: sla op en sluit FM, klik **Start FM met module** (Steam moet open zijn) en laad je
@@ -59,7 +59,7 @@ in FM's trainingskalender, week na week.
 
 ### Windows
 
-1. Download `FM27-Trainer-Windows.zip` bij [Releases](../../releases), pak hem uit en start **FM27 Trainer.exe**.
+1. Download [FM27-Trainer-Windows.zip](../../releases/latest/download/FM27-Trainer-Windows.zip) (altijd de nieuwste versie), pak hem uit en start **FM27 Trainer.exe**.
    De exe is nog niet ondertekend: waarschuwt SmartScreen, klik dan op *Meer informatie → Toch uitvoeren*.
 2. Start FM27 zoals altijd (of met *Start FM27* in de app) en laad je save. De app leest `fm.exe` rechtstreeks: er
    hoeft niets geïnstalleerd of meegestart te worden.

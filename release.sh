@@ -1,7 +1,8 @@
 #!/bin/bash
 # Release voor macOS: universele app (Apple silicon + Intel), ondertekend, genotariseerd, in een .dmg.
 #
-#   ./release.sh                 bouwt dist/FM27-Trainer-<versie>.dmg
+#   ./release.sh                 bouwt dist/FM27-Trainer-macOS.dmg (vaste naam, zodat de
+#                                'latest'-link van GitHub altijd werkt; de versie zit in de app zelf)
 #
 # Ondertekenen gebeurt met het eerste "Developer ID Application"-certificaat in je sleutelhanger
 # (of FM27_SIGN_IDENTITY). Zonder certificaat: ad-hoc (werkt alleen op je eigen Mac).
@@ -20,7 +21,7 @@ PROFILE="${FM27_NOTARY_PROFILE:-fm27-notary}"
 WORK="${TMPDIR:-/tmp}fm27-release"
 APP="$WORK/FM27 Trainer.app"
 mkdir -p dist
-DMG="$PWD/dist/FM27-Trainer-$VERSION.dmg"
+DMG="$PWD/dist/FM27-Trainer-macOS.dmg"
 
 echo "▸ FM27 Trainer $VERSION"
 for T in aarch64-apple-darwin x86_64-apple-darwin; do
