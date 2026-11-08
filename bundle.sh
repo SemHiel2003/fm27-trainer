@@ -12,6 +12,7 @@ lipo -create -output target/release/libfm27_agent.dylib \
   target/aarch64-apple-darwin/release/libfm27_agent.dylib \
   target/x86_64-apple-darwin/release/libfm27_agent.dylib
 codesign --force --sign - target/release/libfm27_agent.dylib
+VERSION=$(grep -m1 '^version' app/Cargo.toml | cut -d'"' -f2)
 APP="dist/FM27 Trainer.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -26,7 +27,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>local.fm27.trainer</string>
   <key>CFBundleExecutable</key><string>FM27 Trainer</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleDevelopmentRegion</key><string>nl</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>

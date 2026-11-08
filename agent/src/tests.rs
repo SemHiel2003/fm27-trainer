@@ -163,7 +163,8 @@ fn build_world(l: &Layout, plugin_base: u64, staff_rva: u64, date_rva: Option<u6
     let c1 = h.alloc(0x80);
     h.w64(p1 + l.p_contract, c1);
     h.w64(c1 + 0x08, p1 + l.p_identity);
-    h.w16(c1 + 0x5A, (-4i16) as u16);
+    h.w8(c1 + 0x5A, (-4i8) as u8);
+    h.w8(c1 + 0x5B, 0x60); // de byte erna hoort er niet bij
     h.w64(c1 + 0x30, 0xDEAD_BEE8);
     let inj_rec = h.alloc(0x40);
     h.w64(p1 + l.p_injuries, inj_rec);

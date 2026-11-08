@@ -451,7 +451,8 @@ fn read_player(p: u64, team: u64) -> Option<PlayerInfo> {
     let morale = mem::u8_at(p + l.p_morale)?;
     let (mut happiness, mut unhappy) = (None, false);
     if let Some(ct) = player_contract(p, shift) {
-        happiness = mem::i16_at(ct + CONTRACT_HAPPINESS);
+        // i8, -100..100 (FMLibreEditor: happiness 0x5A, playing-time happiness 0x5C)
+        happiness = mem::u8_at(ct + CONTRACT_HAPPINESS).map(|v| v as i8 as i16);
         unhappy = mem::u64_at(ct + CONTRACT_UNHAPPINESS).is_some_and(|x| x != 0);
     }
     let mut injuries = Vec::new();
