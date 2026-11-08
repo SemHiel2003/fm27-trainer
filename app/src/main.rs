@@ -104,6 +104,30 @@ fn cli(args: &[String]) -> Result<bool> {
             println!("{}", serde_json::to_string_pretty(&agent::request(req)?)?);
             Ok(true)
         }
+        // Voor onderzoeksscripts (tools/research): één JSON-opdracht per regel op stdin, één antwoord
+        // per regel op stdout ({"ok":true,"data":...} of {"ok":false,"error":...}). Op Windows is dit
+        // de manier om veel opdrachten te sturen zonder elke keer opnieuw met fm.exe te verbinden.
+        Some("agent-serve") => {
+            use std::io::{BufRead, Write};
+            let stdin = std::io::stdin();
+            let mut out = std::io::stdout().lock();
+            for line in stdin.lock().lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let reply = match serde_json::from_str::<serde_json::Value>(&line) {
+                    Ok(req) => match agent::request(req) {
+                        Ok(v) => serde_json::json!({"ok": true, "data": v}),
+                        Err(e) => serde_json::json!({"ok": false, "error": format!("{e:#}")}),
+                    },
+                    Err(e) => serde_json::json!({"ok": false, "error": format!("ongeldig verzoek: {e}")}),
+                };
+                writeln!(out, "{reply}")?;
+                out.flush()?;
+            }
+            Ok(true)
+        }
         Some("train") => {
             let eff = load_effectiveness().context("nog geen uitgelezen waarden")?;
             let write = args.iter().any(|a| a == "--write");
