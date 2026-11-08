@@ -188,11 +188,11 @@ fn cxxabi_vtables() -> Vec<u64> {
     unsafe extern "C" {
         fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
     }
-    ["ZTVN10__cxxabiv117__class_type_infoE", "ZTVN10__cxxabiv120__si_class_type_infoE", "ZTVN10__cxxabiv121__vmi_class_type_infoE"]
+    ["_ZTVN10__cxxabiv117__class_type_infoE", "_ZTVN10__cxxabiv120__si_class_type_infoE", "_ZTVN10__cxxabiv121__vmi_class_type_infoE"]
         .iter()
         .filter_map(|s| {
             let c = std::ffi::CString::new(*s).ok()?;
-            // RTLD_DEFAULT = (void*)-2 op macOS
+            // dlsym wil de C-naam: één underscore (in de symbooltabel staan er twee); RTLD_DEFAULT = (void*)-2
             let p = unsafe { dlsym(-2isize as *mut std::ffi::c_void, c.as_ptr()) };
             (!p.is_null()).then_some(p as u64 + 16)
         })
