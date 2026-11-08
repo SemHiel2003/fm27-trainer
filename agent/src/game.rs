@@ -749,7 +749,8 @@ impl FmDate {
     }
 }
 
-/// De spel-datum zoals het team hem bijhoudt (gemeten op de Mac).
+/// Een datum die het team bijhoudt: dicht bij de spel-datum tijdens het seizoen, maar niet gelijk
+/// (alleen als reserve).
 fn date_via_team(team: u64) -> Option<FmDate> {
     let s = mem::u64_at(team + TEAM_SCHEDULE).filter(|p| mem::is_ptr(*p))?;
     FmDate::read(s + SCHEDULE_DATE)
@@ -764,10 +765,9 @@ fn date_via_static() -> Option<FmDate> {
 
 pub fn game_date() -> Result<FmDate, String> {
     let c = chain()?;
-    let d = match mem::abi() {
-        Abi::Msvc => date_via_static().or_else(|| date_via_team(c.team)),
-        Abi::Itanium => date_via_team(c.team).or_else(date_via_static),
-    };
+    // De vaste plek van de build eerst: de datum bij het team is een andere (rond de laatste
+    // wedstrijd), wat buiten het seizoen weken kan schelen (gezien op 28 juli: team 23 mei).
+    let d = date_via_static().or_else(|| date_via_team(c.team));
     d.ok_or_else(|| "spel-datum niet leesbaar / game date not readable".into())
 }
 
