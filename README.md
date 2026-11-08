@@ -54,6 +54,10 @@ back. The activity log shows exactly what FM wanted and what was restored.
 **Club tools.** Set the transfer and wage budget, heal injuries, lift suspensions, and bring morale back to the
 top. Every change can be undone, and it only sticks once you save in FM.
 
+**Transfers.** Sell a player straight to any club, or buy one: pick a club, pick a player from its first team,
+set the fee and wage, check, and he is in your squad; the money moves between the two clubs at once. Every move
+can be undone until you save in FM.
+
 **Tactical understanding.** The Squad page shows how well the squad knows your current tactic, per area, and can
 maximise it with one click, like FM's in-game editor does: every player's understanding of every setting goes to
 100 %. FM lets it drop again every game week, so there is a switch to keep it at 100 % while the app is open.

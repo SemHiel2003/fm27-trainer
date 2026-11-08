@@ -41,6 +41,9 @@ in FM's trainingskalender, week na week.
   wat FM wilde en wat er is teruggezet.
 - **Club en selectie.** Transfer- en loonbudget instellen, blessures genezen, schorsingen opheffen, moraal naar de
   top. Alles is ongedaan te maken en blijft pas bewaard als je in FM opslaat.
+- **Transfers.** Verkoop een speler direct aan elke club, of koop er een: kies een club, kies een speler uit het
+  eerste elftal, bepaal som en salaris, controleer, en hij staat in je selectie; het geld gaat meteen tussen de
+  clubs over. Alles is ongedaan te maken tot je in FM opslaat.
 - **Tactisch begrip.** De selectiepagina laat per onderdeel zien hoe goed de selectie je huidige tactiek kent, en
   zet het met één klik op het maximum, zoals de in-game editor van FM: het begrip van elke speler voor elke
   instelling naar 100 %. FM laat het elke speelweek weer zakken; met een schakelaar houdt de app het op 100 %

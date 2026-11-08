@@ -605,6 +605,9 @@ struct Market {
     wijndal_contract: u64,
     milan: u64,
     milan_finance: u64,
+    /// de eerste speler van AC Milan (uid 100), om te kopen
+    milan_player: u64,
+    milan_player_contract: u64,
     our_selection: u64,
     national_selection: u64,
 }
@@ -676,7 +679,14 @@ fn build_market(abi: Abi, l: &Layout, base: u64, staff_rva: u64, clubs_rva: u64,
     let (p3, _) = player(&mut h, senior, 2, 5003, "Davy Klaassen", 0);
     let (p4, _) = player(&mut h, senior, 3, 5004, "Daley Blind", 0);
     let (coach, _) = player(&mut h, senior, 4, 5002, "Jordi Cruijff", l.player_coach_shift);
-    h.list(senior + 0x38, &[p3, wijndal, p4, coach]);
+    // de selectie van Ajax: 4 spelers in een blok van 144 bytes, met ruimte om iemand te kopen
+    let ajax_block = h.alloc(144);
+    for (i, q) in [p3, wijndal, p4, coach].iter().enumerate() {
+        h.w64(ajax_block + i as u64 * 8, *q);
+    }
+    h.w64(senior + 0x38, ajax_block);
+    h.w64(senior + 0x40, ajax_block + 32);
+    h.w64(senior + 0x48, ajax_block + 32);
     h.list(u21 + 0x38, &[wijndal]);
     h.w64(senior + 0x88, wijndal + l.p_identity); // aanvoerder
     // de menselijke manager
@@ -705,8 +715,13 @@ fn build_market(abi: Abi, l: &Layout, base: u64, staff_rva: u64, clubs_rva: u64,
     let ms = team(&mut h, milan);
     h.list(milan + 0x18, &[ms]);
     let block = h.alloc(144);
+    let (mut milan_player, mut milan_player_contract) = (0, 0);
     for i in 0..3u64 {
-        let (q, _) = player(&mut h, ms, 100 + i as u32, 6000 + i as u32, "Milan player", 0);
+        let (q, qc) = player(&mut h, ms, 100 + i as u32, 6000 + i as u32, &format!("Milan player {i}"), 0);
+        h.put(q + l.p_value, &(12_000_000i32 - i as i32 * 1_000_000).to_le_bytes());
+        if i == 0 {
+            (milan_player, milan_player_contract) = (q, qc);
+        }
         h.w64(block + i * 8, q);
     }
     h.w64(ms + 0x38, block);
@@ -758,7 +773,7 @@ fn build_market(abi: Abi, l: &Layout, base: u64, staff_rva: u64, clubs_rva: u64,
 
     h.install(true);
     statics.install(false);
-    Market { finance: fin, senior, u21, wijndal, wijndal_contract: wc, milan, milan_finance: milan_fin, our_selection, national_selection }
+    Market { finance: fin, senior, u21, wijndal, wijndal_contract: wc, milan, milan_finance: milan_fin, milan_player, milan_player_contract, our_selection, national_selection }
 }
 
 fn snapshot() -> Vec<Vec<u8>> {
@@ -799,8 +814,54 @@ fn run_market(l: &'static Layout, m: &Market) {
     assert_eq!(plan["to"], "AC Milan");
     assert!(snapshot() == before, "een controle schrijft niets");
 
-    // wat niet mag
+    // kopen: de selectie van AC Milan bekijken, controleren, kopen, ongedaan maken
+    let ms_squad = call(json!({"cmd": "club_squad", "club": 45})).unwrap();
+    let ms_squad = ms_squad.as_array().unwrap();
+    assert_eq!(ms_squad.len(), 3);
+    assert_eq!(ms_squad[0]["name"], "Milan player 0", "duurste eerst");
+    assert_eq!(ms_squad[0]["value"], 12_000_000);
+    let plan = call(json!({"cmd": "buy", "uid": 100, "club": 45, "fee": 5_000_000, "dry_run": true})).unwrap();
+    assert_eq!(plan["purchase"], true);
+    assert_eq!(plan["from"], "AC Milan");
+    assert_eq!(plan["to"], "AFC Ajax");
+    assert_eq!(plan["balance_after"], 20_000_000);
+    assert_eq!(plan["transfer_budget_after"], 7_000_000);
+    assert_eq!(plan["buyer_pays"], true, "AC Milan ontvangt het geld");
+    assert_eq!(plan["selections"], 0);
+    assert!(snapshot() == before, "een controle schrijft niets");
     let err = |req: Value| call(req).unwrap_err();
+    assert!(err(json!({"cmd": "buy", "uid": 37058888, "club": 992, "fee": 1})).contains("eigen club"));
+    assert!(err(json!({"cmd": "buy", "uid": 999, "club": 45, "fee": 1})).contains("niet gevonden bij AC Milan"));
+    assert!(err(json!({"cmd": "buy", "uid": 1, "club": 47, "fee": 1})).contains("vrouwenclubs"));
+    if call(json!({"cmd": "ping"})).unwrap()["known_build"] == false {
+        call(json!({"cmd": "allow_untested", "on": true})).unwrap();
+    }
+    let bought = call(json!({"cmd": "buy", "uid": 100, "club": 45, "fee": 5_000_000, "wage": 25_000})).unwrap();
+    assert_eq!(bought["done"], true);
+    let senior_list = list_items(m.senior + 0x38);
+    assert_eq!(senior_list.len(), 5);
+    assert_eq!(senior_list[4], m.milan_player, "achteraan in je selectie");
+    let ms = mem::u64_at(mem::u64_at(m.milan + 0x18).unwrap()).unwrap();
+    let milan_list = list_items(ms + 0x38);
+    assert_eq!(milan_list.len(), 2);
+    assert!(!milan_list.contains(&m.milan_player));
+    assert_eq!(mem::u64_at(m.milan_player + l.p_team), Some(m.senior));
+    assert_eq!(mem::u64_at(m.milan_player_contract + 0x10), Some(m.senior));
+    assert_eq!(mem::u64_at(m.milan_player_contract + 0x18), Some(m.senior));
+    assert_eq!(mem::i32_at(m.milan_player_contract + 0x20), Some(25_000));
+    assert_eq!(mem::u8_at(m.milan_player_contract + 0x5D), Some(255), "geen rugnummer");
+    assert_eq!(mem::u8_at(m.milan_player_contract + 0x57), Some(0), "van de transferlijst");
+    assert_eq!(mem::i32_at(m.finance + 0x0C), Some(20_000_000), "jij betaalt");
+    assert_eq!(mem::i32_at(m.finance + 0x7C4), Some(7_000_000));
+    assert_eq!(mem::i32_at(m.milan_finance + 0x0C), Some(105_000_000), "AC Milan ontvangt");
+    assert_eq!(mem::i32_at(m.milan_finance + 0x7C4), Some(35_000_000));
+    let squad = call(json!({"cmd": "squad"})).unwrap();
+    assert!(squad.as_array().unwrap().iter().any(|p| p["uid"] == 100), "nu in je selectie");
+    let undone = call(json!({"cmd": "undo"})).unwrap();
+    assert!(undone["undone"].as_str().unwrap().starts_with("aankoop Milan player 0"));
+    assert!(snapshot() == before, "na ongedaan maken is alles weer precies zoals ervoor");
+
+    // wat niet mag
     assert!(err(json!({"cmd": "sell", "uid": 4, "club": 45, "fee": 1})).contains("speler-trainer"));
     assert!(err(json!({"cmd": "sell", "uid": 37058888, "club": 992, "fee": 1})).contains("eigen club"));
     assert!(err(json!({"cmd": "sell", "uid": 37058888, "club": 47, "fee": 1})).contains("vrouwenclubs"));

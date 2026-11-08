@@ -12,7 +12,7 @@ Een Rust-app (egui) voor Football Manager 27:
 2. **Training plannen** op de zwakste gebieden, met de 59 sessies en 99 presets uit FM27's eigen data.
 3. **Live in FM** (via een module): training in FM's kalender zetten en bijhouden (FM's assistent plant elke week de
    komende 1–2 weken opnieuw in; de app zet ze terug), budget, blessures, schorsingen, moraal, **spelers direct
-   verkopen** aan een andere club en **tactisch begrip maximaliseren** (zoals FM's in-game editor).
+   verkopen** aan en **kopen** van een andere club, en **tactisch begrip maximaliseren** (zoals FM's in-game editor).
 
 Repo's (GitHub `SemHiel2003`):
 - `fm27-trainer`: **openbaar**, releases v0.2.0 (genotariseerde Mac-DMG + Windows-zip), v0.2.1, v0.2.2 en v0.2.3 (8 nov 2026,
@@ -39,7 +39,7 @@ agent/               crate fm27-agent: de spellogica, gedeeld
                      tests (gesimuleerd geheugen)
   src/rtti.rs        klassen herkennen: Itanium (clang/macOS) en MSVC (Windows)
   src/game.rs        veldposities per platform (Layout MAC/WIN), builds (BUILDS), manager/club/selectie/training/undo
-  src/sell.rs        speler direct verkopen
+  src/sell.rs        speler direct verkopen én kopen (één verhuisfunctie `relocate`), clubs zoeken, selectie van een club
   src/understanding.rs  tactisch begrip (Tactical Understanding) per speler lezen en maximaliseren
   src/tests.rs       hele flow tegen gesimuleerd FM-geheugen, beide indelingen; MSVC-RTTI tegen testdata/rtti_test.dll
 docs/TECHNICAL.md    architectuur en posities; docs/research/fm27-transfer-offers.md: onderzoek biedingen
@@ -47,7 +47,7 @@ tools/research/      fmq.py (onderzoeksclient), offers.py
 ```
 
 Alle opdrachten van de module: `ping`, `club`, `squad`, `set_finances`, `heal`, `lift_bans`, `inspire`, `undo`,
-`game_date`, `training_weeks`, `set_week`, `clubs`, `sell`, `understanding`, `max_understanding` (met `dry_run`),
+`game_date`, `training_weeks`, `set_week`, `clubs`, `club_squad`, `sell`, `buy`, `understanding`, `max_understanding` (met `dry_run`),
 `allow_untested`, en voor onderzoek `chain`, `census`, `class_of`, `read`, `find_u16`, `find_ptr`, `write` (alleen
 met `expect`). Zie `agent/src/lib.rs`.
 
@@ -167,6 +167,7 @@ via `read` uit fm.exe komt; game_plugin.dll ligt op Windows ingepakt op schijf m
 | uitlezen club/selectie/kalender | ✅ | ✅ (8 nov 2026, Ajax-save) |
 | budget, genezen, moraal, training schrijven, undo | ✅ | ✅ (8 nov 2026) |
 | verkopen (`sell`) | alleen simulatie | ✅ dry run én één echte verkoop + undo (8 nov 2026) |
+| kopen (`buy`, `club_squad`) | alleen simulatie | dry run live (8 nov 2026); echte aankoop door de gebruiker te testen |
 | tactisch begrip (`understanding`, `max_understanding`) | alleen simulatie (offset 0xF8 is een gok) | ✅ gelezen en gemaximaliseerd (8 nov 2026) |
 | MSVC-RTTI | n.v.t. | ✅ testdata én live (census, opstellingen) |
 

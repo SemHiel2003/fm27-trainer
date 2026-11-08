@@ -41,6 +41,12 @@ pub struct SellState {
     pub plan: Option<(Value, (u32, u32, i64, Option<i64>))>,
     pub status: String,
     pub error: bool,
+    /// kopen in plaats van verkopen
+    pub buy: bool,
+    /// de selectie van de gekozen club (om iemand te kopen) en voor welke club die geldt
+    pub buy_squad: Vec<Value>,
+    pub squad_club: Option<u32>,
+    pub buy_player: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -48,6 +54,9 @@ enum Aux {
     Clubs,
     Plan((u32, u32, i64, Option<i64>)),
     Sale,
+    Squad,
+    BuyPlan((u32, u32, i64, Option<i64>)),
+    Buy,
 }
 
 /// Regel in het logboek van de trainingspagina.
@@ -187,6 +196,28 @@ impl LiveState {
         self.sell.status = t!("Verkopen…", "Selling…").into();
         self.sell.error = false;
         self.aux(ctx, Aux::Sale, json!({"cmd": "sell", "uid": uid, "club": club, "fee": fee, "wage": wage}));
+    }
+
+    /// De selectie van een andere club ophalen, om daar iemand uit te kopen.
+    pub fn load_club_squad(&mut self, ctx: &egui::Context, club: u32) {
+        self.sell.squad_club = Some(club);
+        self.sell.buy_squad.clear();
+        self.sell.buy_player = None;
+        self.aux(ctx, Aux::Squad, json!({"cmd": "club_squad", "club": club}));
+    }
+
+    /// Een aankoop controleren (er wordt niets geschreven).
+    pub fn plan_buy(&mut self, ctx: &egui::Context, uid: u32, club: u32, fee: i64, wage: Option<i64>) {
+        self.sell.plan = None;
+        self.sell.status = t!("Controleren…", "Checking…").into();
+        self.sell.error = false;
+        self.aux(ctx, Aux::BuyPlan((uid, club, fee, wage)), json!({"cmd": "buy", "uid": uid, "club": club, "fee": fee, "wage": wage, "dry_run": true}));
+    }
+
+    pub fn buy_now(&mut self, ctx: &egui::Context, uid: u32, club: u32, fee: i64, wage: Option<i64>) {
+        self.sell.status = t!("Kopen…", "Buying…").into();
+        self.sell.error = false;
+        self.aux(ctx, Aux::Buy, json!({"cmd": "buy", "uid": uid, "club": club, "fee": fee, "wage": wage}));
     }
 
     pub fn club_name(&self) -> Option<String> {
@@ -350,9 +381,25 @@ impl LiveState {
                 match (kind, r) {
                     (Aux::Clubs, Ok(Value::Array(a))) => self.sell.clubs = a,
                     (Aux::Clubs, Ok(_)) => self.sell.clubs.clear(),
-                    (Aux::Plan(key), Ok(v)) => {
+                    (Aux::Squad, Ok(Value::Array(a))) => self.sell.buy_squad = a,
+                    (Aux::Squad, Ok(_)) => self.sell.buy_squad.clear(),
+                    (Aux::Plan(key), Ok(v)) | (Aux::BuyPlan(key), Ok(v)) => {
                         self.sell.status.clear();
                         self.sell.plan = Some((v, key));
+                    }
+                    (Aux::Buy, Ok(v)) => {
+                        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("?").to_string();
+                        self.sell.status = t!(
+                            format!("{} is gekocht van {} en staat in je selectie. Klopt er iets niet? Gebruik Ongedaan maken voordat je opslaat.", s("player"), s("from")),
+                            format!("{} has been bought from {} and is in your squad. Something wrong? Use Undo before you save.", s("player"), s("from"))
+                        );
+                        self.sell.error = false;
+                        self.sell.plan = None;
+                        self.sell.buy_player = None;
+                        if let Some(c) = self.sell.squad_club {
+                            self.load_club_squad(ctx, c);
+                        }
+                        self.refresh(ctx, "", None);
                     }
                     (Aux::Sale, Ok(v)) => {
                         let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("?").to_string();

@@ -615,12 +615,16 @@ fn absence_list(p: u64) -> Option<(u64, Vec<u64>)> {
     pointer_list(injury_record(p)? + ABSENCES, 32)
 }
 
-pub fn squad() -> Result<Vec<PlayerInfo>, String> {
-    let c = chain()?;
-    let (_, players) = pointer_list(c.team + TEAM_PLAYERS, 200).ok_or("spelerslijst van het team niet leesbaar")?;
-    let mut out: Vec<PlayerInfo> = players.into_iter().filter_map(|p| read_player(p, c.team)).collect();
+/// De spelers van een team (alleen wie zelf naar dat team wijst), op naam.
+pub(crate) fn squad_of(team: u64) -> Result<Vec<PlayerInfo>, String> {
+    let (_, players) = pointer_list(team + TEAM_PLAYERS, 200).ok_or("spelerslijst van het team niet leesbaar / team's player list not readable")?;
+    let mut out: Vec<PlayerInfo> = players.into_iter().filter_map(|p| read_player(p, team)).collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+pub fn squad() -> Result<Vec<PlayerInfo>, String> {
+    squad_of(chain()?.team)
 }
 
 fn select(uids: &Option<Vec<u32>>) -> Result<Vec<PlayerInfo>, String> {

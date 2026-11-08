@@ -298,7 +298,7 @@ fn selection_patches(person: u32, club_ids: &HashSet<u32>) -> Result<Vec<Patch>,
     Ok(out)
 }
 
-// ---- verkopen -------------------------------------------------------------------------------
+// ---- verkopen en kopen ----------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
 pub struct Sale {
@@ -306,7 +306,10 @@ pub struct Sale {
     pub uid: u32,
     pub from: String,
     pub to: String,
+    /// de andere club (koper bij verkopen, verkoper bij kopen)
     pub to_uid: u32,
+    /// kopen (naar jouw club) in plaats van verkopen
+    pub purchase: bool,
     /// pond
     pub fee: i64,
     /// nieuw salaris in pond per week, als dat verandert
@@ -314,9 +317,9 @@ pub struct Sale {
     /// opstellingen waarin zijn plek leeg wordt
     pub selections: usize,
     pub was_captain: bool,
-    /// de koper betaalt (alleen clubs met volledige financiën)
+    /// de andere club betaalt of ontvangt mee (alleen clubs met volledige financiën)
     pub buyer_pays: bool,
-    /// jouw saldo en transferbudget na de verkoop (pond)
+    /// jouw saldo en transferbudget na afloop (pond)
     pub balance_after: i64,
     pub transfer_budget_after: i64,
     /// mag er op deze FM-versie geschreven worden (anders eerst toestaan in Instellingen)
@@ -337,9 +340,37 @@ fn date_patch(contract: u64, off: u64, today: FmDate, patches: &mut Vec<Patch>) 
     push(patches, contract + off, old, new);
 }
 
-/// Verkoopt speler `uid` aan club `to_uid` voor `fee` pond (met `wage` pond per week als nieuw
-/// salaris, anders blijft het). Met `dry_run` wordt alleen gecontroleerd en niets geschreven.
+/// Het eerste elftal van een club: het eerste team in zijn lijst, dat naar de club terugwijst.
+fn first_team(club: &ClubEntry) -> Result<u64, String> {
+    List::read(club.addr + CLUB_TEAMS)
+        .and_then(|l| l.elements())
+        .and_then(|t| t.first().copied())
+        .filter(|s| mem::is_ptr(*s) && mem::u64_at(*s + TEAM_CLUB) == Some(club.addr))
+        .ok_or_else(|| format!("{} heeft geen eerste elftal / has no senior team", club.name))
+}
+
+/// De selectie (eerste elftal) van een club, duurste eerst: om een speler te kiezen om te kopen.
+pub fn club_squad(uid: u32) -> Result<Vec<game::PlayerInfo>, String> {
+    let club = club_by_uid(uid)?;
+    let mut players = game::squad_of(first_team(&club)?)?;
+    players.sort_by(|a, b| b.value.cmp(&a.value).then(a.name.cmp(&b.name)));
+    Ok(players)
+}
+
+/// Verkoopt speler `uid` van je eigen club aan club `to_uid` voor `fee` pond (met `wage` pond per
+/// week als nieuw salaris, anders blijft het). Met `dry_run` wordt alleen gecontroleerd.
 pub fn sell(uid: u32, to_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -> Result<Sale, String> {
+    relocate(false, uid, to_uid, fee, wage, dry_run)
+}
+
+/// Koopt speler `uid` van club `from_uid` voor `fee` pond: hij komt in je eerste elftal, jij betaalt.
+pub fn buy(uid: u32, from_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -> Result<Sale, String> {
+    relocate(true, uid, from_uid, fee, wage, dry_run)
+}
+
+/// Verhuist een speler tussen jouw club en een andere club. Bij verkopen gaat hij van jou naar
+/// `other`, bij kopen (`purchase`) van `other` naar jouw eerste elftal.
+fn relocate(purchase: bool, uid: u32, other_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -> Result<Sale, String> {
     if !(0..=MAX_FEE).contains(&fee) {
         return Err("transfersom tussen 0 en 2 miljard pond / fee must be 0 to 2 billion pounds".into());
     }
@@ -351,33 +382,56 @@ pub fn sell(uid: u32, to_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -
     let l = game::layout();
     let chain = game::chain()?;
     let our = chain.club;
-    let squad = game::squad()?;
-    let p = squad.iter().find(|p| p.uid == uid).ok_or("speler niet in je selectie / player not in your squad")?;
-    if p.player_coach {
-        return Err(format!("{} is speler-trainer; die kan de app (nog) niet verkopen / player-coaches cannot be sold yet", p.name));
-    }
-    let obj = p.addr;
+    let our_name = game::club_name(our).unwrap_or_else(|| "?".into());
 
-    // het contract moet van hem zijn, van een speler, met één werkgever: zijn club
-    let contract = game::player_contract(obj, 0).ok_or("contract niet gevonden / contract not found")?;
-    let team = mem::u64_at(obj + l.p_team).filter(|t| mem::is_ptr(*t)).ok_or("team niet gevonden")?;
-    let employer = mem::u64_at(contract + C_TEAM).filter(|t| mem::is_ptr(*t)).ok_or("werkgever niet gevonden")?;
-    if mem::u64_at(contract + C_SENIOR_TEAM) != Some(employer) || mem::u8_at(contract + C_JOB) != Some(PLAYER_JOB) {
-        return Err(format!("{} heeft een bijzonder contract; niet verkocht / unusual contract, not sold", p.name));
+    // de andere club: niet de eigen, zelfde soort (mannen/vrouwen)
+    let other = club_by_uid(other_uid)?;
+    if other.addr == our {
+        return Err("dat is je eigen club / that is your own club".into());
     }
-    if mem::u64_at(team + TEAM_CLUB) != Some(our) || mem::u64_at(employer + TEAM_CLUB) != Some(our) {
-        return Err(format!("{} is verhuurd of speelt bij een andere club / is on loan", p.name));
+    if mem::u8_at(our + CLUB_WOMEN) != mem::u8_at(other.addr + CLUB_WOMEN) {
+        return Err("mannen- en vrouwenclubs kunnen niet ruilen / men's and women's clubs don't mix".into());
     }
+    let (from_club, from_name, to_club, to_name) = if purchase { (other.addr, other.name.clone(), our, our_name.clone()) } else { (our, our_name.clone(), other.addr, other.name.clone()) };
 
-    // alle lijsten van de club die hem hebben
+    // alle teams van de club die hij verlaat
     let teams: Vec<u64> = {
-        let mut t = List::read(our + CLUB_TEAMS).and_then(|l| l.elements()).ok_or("teams van je club niet leesbaar")?;
+        let mut t = List::read(from_club + CLUB_TEAMS).and_then(|l| l.elements()).ok_or_else(|| format!("teams van {from_name} niet leesbaar / teams not readable"))?;
         t.sort_unstable();
         t.dedup();
         t
     };
+
+    // de speler: in je eigen selectie, of ergens bij de andere club
+    let p = if purchase {
+        let mut found = None;
+        for &t in &teams {
+            if let Some(p) = game::squad_of(t).ok().and_then(|s| s.into_iter().find(|p| p.uid == uid)) {
+                found = Some(p);
+                break;
+            }
+        }
+        found.ok_or_else(|| format!("speler niet gevonden bij {from_name} / player not found at that club"))?
+    } else {
+        game::squad()?.into_iter().find(|p| p.uid == uid).ok_or("speler niet in je selectie / player not in your squad")?
+    };
+    if p.player_coach {
+        return Err(format!("{} is speler-trainer; die kan de app (nog) niet verplaatsen / player-coaches cannot be moved yet", p.name));
+    }
+    let obj = p.addr;
+
+    // het contract moet van hem zijn, van een speler, met één werkgever: de club die hij verlaat
+    let contract = game::player_contract(obj, 0).ok_or("contract niet gevonden / contract not found")?;
+    let team = mem::u64_at(obj + l.p_team).filter(|t| mem::is_ptr(*t)).ok_or("team niet gevonden")?;
+    let employer = mem::u64_at(contract + C_TEAM).filter(|t| mem::is_ptr(*t)).ok_or("werkgever niet gevonden")?;
+    if mem::u64_at(contract + C_SENIOR_TEAM) != Some(employer) || mem::u8_at(contract + C_JOB) != Some(PLAYER_JOB) {
+        return Err(format!("{} heeft een bijzonder contract; niet verplaatst / unusual contract, not moved", p.name));
+    }
+    if mem::u64_at(team + TEAM_CLUB) != Some(from_club) || mem::u64_at(employer + TEAM_CLUB) != Some(from_club) {
+        return Err(format!("{} is verhuurd of speelt bij een andere club / is on loan or plays elsewhere", p.name));
+    }
     if !teams.contains(&team) || !teams.contains(&employer) {
-        return Err("speler staat niet in de lijsten van je club / player not listed with your club".into());
+        return Err(format!("speler staat niet in de lijsten van {from_name} / player not listed with that club"));
     }
     let mut leaving = Vec::new();
     for &t in &teams {
@@ -394,42 +448,35 @@ pub fn sell(uid: u32, to_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -
         return Err("speler staat niet in de lijst van zijn team / not in his team's list".into());
     }
 
-    // de koper: een andere club, zelfde soort (mannen/vrouwen), met een eerste elftal met ruimte
-    let buyer = club_by_uid(to_uid)?;
-    if buyer.addr == our {
-        return Err("dat is je eigen club / that is your own club".into());
-    }
-    if mem::u8_at(our + CLUB_WOMEN) != mem::u8_at(buyer.addr + CLUB_WOMEN) {
-        return Err("mannen- en vrouwenclubs kunnen niet ruilen / men's and women's clubs don't mix".into());
-    }
-    let senior = List::read(buyer.addr + CLUB_TEAMS)
-        .and_then(|l| l.elements())
-        .and_then(|t| t.first().copied())
-        .filter(|s| mem::is_ptr(*s) && mem::u64_at(*s + TEAM_CLUB) == Some(buyer.addr))
-        .ok_or_else(|| format!("{} heeft geen eerste elftal / has no senior team", buyer.name))?;
-    let target = List::read(senior + TEAM_PLAYERS).ok_or_else(|| format!("selectie van {} niet leesbaar", buyer.name))?;
-    let target_elems = target.elements().ok_or("selectie van de koper niet leesbaar")?;
+    // waar hij heen gaat: het eerste elftal van de ontvangende club, met ruimte in de lijst
+    let senior = if purchase { first_team(&ClubEntry { uid: 0, name: our_name.clone(), women: false, addr: our })? } else { first_team(&other)? };
+    let target = List::read(senior + TEAM_PLAYERS).ok_or_else(|| format!("selectie van {to_name} niet leesbaar"))?;
+    let target_elems = target.elements().ok_or("selectie van de ontvangende club niet leesbaar")?;
     if target_elems.contains(&obj) {
         return Err("speler staat al bij die club / already at that club".into());
     }
     if target.room(l.heap_blocks) <= target_elems.len() as u64 {
-        return Err(format!("de selectie van {} zit vol; de app kan hem (nog) niet laten groeien / {}'s squad list is full", buyer.name, buyer.name));
+        return Err(format!("de selectie van {to_name} zit vol; de app kan hem (nog) niet laten groeien / {to_name}'s squad list is full"));
     }
 
-    // de opstellingen van jouw club (je bent de menselijke manager): zijn plek wordt leeg
-    let person = person_id(obj, 0).ok_or("id van de speler niet leesbaar")?;
-    let mut club_ids = HashSet::new();
-    for &t in &teams {
-        let Some(elems) = List::read(t + TEAM_PLAYERS).and_then(|l| l.elements()) else { continue };
-        for e in elems {
-            for shift in [0, l.player_coach_shift] {
-                if let Some(id) = person_id(e, shift) {
-                    club_ids.insert(id);
+    // de opstellingen van de club die hij verlaat, als dat de jouwe is (jij bent de menselijke
+    // manager): zijn plek wordt leeg
+    let mut soft = Vec::new();
+    if !purchase {
+        let person = person_id(obj, 0).ok_or("id van de speler niet leesbaar")?;
+        let mut club_ids = HashSet::new();
+        for &t in &teams {
+            let Some(elems) = List::read(t + TEAM_PLAYERS).and_then(|l| l.elements()) else { continue };
+            for e in elems {
+                for shift in [0, l.player_coach_shift] {
+                    if let Some(id) = person_id(e, shift) {
+                        club_ids.insert(id);
+                    }
                 }
             }
         }
+        soft = selection_patches(person, &club_ids)?;
     }
-    let soft = selection_patches(person, &club_ids)?;
 
     let today = game::game_date()?;
     let mut patches = Vec::new();
@@ -447,7 +494,7 @@ pub fn sell(uid: u32, to_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -
             }
         }
     }
-    append(&target, obj, &mut patches).ok_or("selectie van de koper niet beschrijfbaar")?;
+    append(&target, obj, &mut patches).ok_or("selectie van de ontvangende club niet beschrijfbaar")?;
     // contract: nieuwe werkgever vanaf vandaag, zonder rugnummer, van de lijsten af
     for off in [C_TEAM, C_SENIOR_TEAM] {
         push(&mut patches, contract + off, employer.to_le_bytes().to_vec(), senior.to_le_bytes().to_vec());
@@ -464,48 +511,66 @@ pub fn sell(uid: u32, to_uid: u32, fee: i64, wage: Option<i64>, dry_run: bool) -
     push(&mut patches, contract + C_LISTING, vec![listing], vec![listing & !0b11]);
     push(&mut patches, obj + l.p_team, team.to_le_bytes().to_vec(), senior.to_le_bytes().to_vec());
 
-    // geld: de koper betaalt (saldo en transferbudget, niet onder nul), jij ontvangt de som op je saldo
-    // én in je transferbudget (FM zelf maakt het deel vrij dat het bestuur toestaat; de app alles,
-    // bijstellen kan op de clubpagina)
-    let mut deltas = vec![(chain.finance + FIN_BALANCE, fee), (chain.finance + FIN_TRANSFER, fee)];
+    // geld. Verkopen: de koper betaalt (saldo en transferbudget, niet onder nul), jij ontvangt de
+    // som op je saldo én in je transferbudget (FM zelf maakt het deel vrij dat het bestuur
+    // toestaat; de app alles, bijstellen kan op de clubpagina). Kopen: andersom.
+    let balance = mem::i32_at(chain.finance + FIN_BALANCE).unwrap_or(0) as i64;
+    let transfer_budget = mem::i32_at(chain.finance + FIN_TRANSFER).unwrap_or(0).max(0) as i64;
+    let mut deltas = Vec::new();
+    let (balance_after, transfer_budget_after) = if purchase {
+        let left = (transfer_budget - fee).max(0);
+        deltas.push((chain.finance + FIN_BALANCE, -fee));
+        if left != transfer_budget {
+            deltas.push((chain.finance + FIN_TRANSFER, left - transfer_budget));
+        }
+        (balance - fee, left)
+    } else {
+        if balance + fee > i32::MAX as i64 || transfer_budget + fee > i32::MAX as i64 {
+            return Err("je saldo of transferbudget zou te groot worden / balance or transfer budget would overflow".into());
+        }
+        deltas.push((chain.finance + FIN_BALANCE, fee));
+        deltas.push((chain.finance + FIN_TRANSFER, fee));
+        (balance + fee, transfer_budget + fee)
+    };
     let mut buyer_pays = false;
-    if let Some(f) = mem::u64_at(buyer.addr + CLUB_FINANCE).filter(|f| mem::is_ptr(*f) && game::finance_looks_real(*f)) {
+    if let Some(f) = mem::u64_at(other.addr + CLUB_FINANCE).filter(|f| mem::is_ptr(*f) && game::finance_looks_real(*f)) {
         buyer_pays = true;
-        deltas.push((f + FIN_BALANCE, -fee));
-        if let Some(tb) = mem::i32_at(f + FIN_TRANSFER).filter(|tb| *tb >= 0) {
-            let left = (tb as i64 - fee).max(0);
-            if left != tb as i64 {
-                deltas.push((f + FIN_TRANSFER, left - tb as i64));
+        if purchase {
+            deltas.push((f + FIN_BALANCE, fee));
+            deltas.push((f + FIN_TRANSFER, fee));
+        } else {
+            deltas.push((f + FIN_BALANCE, -fee));
+            if let Some(tb) = mem::i32_at(f + FIN_TRANSFER).filter(|tb| *tb >= 0) {
+                let left = (tb as i64 - fee).max(0);
+                if left != tb as i64 {
+                    deltas.push((f + FIN_TRANSFER, left - tb as i64));
+                }
             }
         }
     }
-    let balance = mem::i32_at(chain.finance + FIN_BALANCE).unwrap_or(0) as i64;
-    let transfer_budget = mem::i32_at(chain.finance + FIN_TRANSFER).unwrap_or(0).max(0) as i64;
-    if balance + fee > i32::MAX as i64 || transfer_budget + fee > i32::MAX as i64 {
-        return Err("je saldo of transferbudget zou te groot worden / balance or transfer budget would overflow".into());
-    }
 
-    let from = game::club_name(our).unwrap_or_else(|| "?".into());
     let mut sale = Sale {
         player: p.name.clone(),
         uid,
-        from,
-        to: buyer.name.clone(),
-        to_uid,
+        from: from_name,
+        to: to_name.clone(),
+        to_uid: other_uid,
+        purchase,
         fee,
         wage,
         selections: soft.len(),
         was_captain,
         buyer_pays,
-        balance_after: balance + fee,
-        transfer_budget_after: transfer_budget + fee,
+        balance_after,
+        transfer_budget_after,
         allowed: game::writes_allowed().is_ok(),
         done: false,
     };
     if dry_run {
         return Ok(sale);
     }
-    game::apply_change(Change { label: format!("verkoop {} → {}", p.name, buyer.name), patches, soft, deltas })?;
+    let label = if purchase { format!("aankoop {} ← {}", p.name, other.name) } else { format!("verkoop {} → {}", p.name, other.name) };
+    game::apply_change(Change { label, patches, soft, deltas })?;
     sale.done = true;
     Ok(sale)
 }

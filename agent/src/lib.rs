@@ -199,13 +199,17 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
             let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100) as usize;
             sell::find_clubs(q, limit).map(|c| json!(c))
         }
-        "sell" => {
+        "sell" | "buy" => {
             let n = |k: &str| req.get(k).and_then(|v| v.as_i64());
             let uid = n("uid").ok_or("uid ontbreekt")? as u32;
             let club = n("club").ok_or("club ontbreekt")? as u32;
             let fee = n("fee").ok_or("fee ontbreekt")?;
             let dry = req.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
-            sell::sell(uid, club, fee, n("wage"), dry).map(|s| json!(s))
+            if cmd == "buy" { sell::buy(uid, club, fee, n("wage"), dry) } else { sell::sell(uid, club, fee, n("wage"), dry) }.map(|s| json!(s))
+        }
+        "club_squad" => {
+            let uid = req.get("club").and_then(|v| v.as_u64()).ok_or("club ontbreekt")? as u32;
+            sell::club_squad(uid).map(|s| json!(s))
         }
         // ---- onderzoek (alleen lezen) -------------------------------------------------
         "chain" => game::chain().map(|c| {
