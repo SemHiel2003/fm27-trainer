@@ -1,5 +1,5 @@
 # Bouwt FM27 Trainer voor macOS (universeel, ondertekend + genotariseerd) en Windows.
-# Start bij een tag als v0.2.0, of met de hand (Actions → release → Run workflow).
+# Start bij een tag als v0.2.1 (met release-notes in docs/releases/v0.2.1.md), of met de hand (Actions → release → Run workflow).
 #
 # Secrets voor macOS-ondertekening (Settings → Secrets and variables → Actions):
 #   MACOS_CERT_P12        base64 van je "Developer ID Application"-certificaat (.p12)
@@ -65,6 +65,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: dist/*.dmg
+          body_path: docs/releases/${{ github.ref_name }}.md
 
   windows:
     if: github.event_name != 'workflow_dispatch' || inputs.platform != 'macos'
@@ -87,3 +88,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: dist/FM27-Trainer-Windows.zip
+          # release-notes: docs/releases/<tag>.md (maak dat bestand voor je de tag pusht)
+          body_path: docs/releases/${{ github.ref_name }}.md
