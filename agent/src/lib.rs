@@ -12,6 +12,7 @@ mod rtti;
 mod sell;
 #[cfg(test)]
 mod tests;
+pub mod understanding;
 
 use serde_json::{Value, json};
 
@@ -188,6 +189,11 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
             game::set_week(start, &days).map(|n| json!({"days": n}))
         }
         "undo" => game::undo_last().map(|l| json!({"undone": l})),
+        "understanding" => understanding::understanding().map(|u| json!(u)),
+        "max_understanding" => {
+            let dry = req.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+            understanding::maximise(&uids(req), dry).map(|m| json!(m))
+        }
         "clubs" => {
             let q = req.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(100) as usize;

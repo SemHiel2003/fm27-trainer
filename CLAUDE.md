@@ -11,8 +11,8 @@ Een Rust-app (egui) voor Football Manager 27:
    taartmeters meten → 4 componenten + 17 key factors.
 2. **Training plannen** op de zwakste gebieden, met de 59 sessies en 99 presets uit FM27's eigen data.
 3. **Live in FM** (via een module): training in FM's kalender zetten en bijhouden (FM's assistent plant elke week de
-   komende 1–2 weken opnieuw in; de app zet ze terug), budget, blessures, schorsingen, moraal, en **spelers direct
-   verkopen** aan een andere club.
+   komende 1–2 weken opnieuw in; de app zet ze terug), budget, blessures, schorsingen, moraal, **spelers direct
+   verkopen** aan een andere club en **tactisch begrip maximaliseren** (zoals FM's in-game editor).
 
 Repo's (GitHub `SemHiel2003`):
 - `fm27-trainer`: **openbaar**, releases v0.2.0 (genotariseerde Mac-DMG + Windows-zip) en v0.2.1 (8 nov 2026, Windows-zip via
@@ -38,14 +38,16 @@ agent/               crate fm27-agent: de spellogica, gedeeld
   src/rtti.rs        klassen herkennen: Itanium (clang/macOS) en MSVC (Windows)
   src/game.rs        veldposities per platform (Layout MAC/WIN), builds (BUILDS), manager/club/selectie/training/undo
   src/sell.rs        speler direct verkopen
+  src/understanding.rs  tactisch begrip (Tactical Understanding) per speler lezen en maximaliseren
   src/tests.rs       hele flow tegen gesimuleerd FM-geheugen, beide indelingen; MSVC-RTTI tegen testdata/rtti_test.dll
 docs/TECHNICAL.md    architectuur en posities; docs/research/fm27-transfer-offers.md: onderzoek biedingen
 tools/research/      fmq.py (onderzoeksclient), offers.py
 ```
 
 Alle opdrachten van de module: `ping`, `club`, `squad`, `set_finances`, `heal`, `lift_bans`, `inspire`, `undo`,
-`game_date`, `training_weeks`, `set_week`, `clubs`, `sell`, `allow_untested`, en voor onderzoek `chain`, `census`,
-`class_of`, `read`, `find_u16`, `find_ptr`, `write` (alleen met `expect`). Zie `agent/src/lib.rs`.
+`game_date`, `training_weeks`, `set_week`, `clubs`, `sell`, `understanding`, `max_understanding` (met `dry_run`),
+`allow_untested`, en voor onderzoek `chain`, `census`, `class_of`, `read`, `find_u16`, `find_ptr`, `write` (alleen
+met `expect`). Zie `agent/src/lib.rs`.
 
 ## Bouwen en testen op Windows
 
@@ -107,6 +109,7 @@ Spelers en staf verschillen per platform; clubs, financiën, contracten, teams, 
 | Speler: namen (voor, achter, roep) | 0x298, 0x2A0, 0x2A8 | 0x2D8, 0x2E0, 0x2E8 |
 | Speler: contract, identiteitsblok, UID | 0x2F0, 0x388, 0x394 | 0x330, 0x288, 0x294 |
 | Speler: transferwaarde, vraagprijs (i32 pond) | 0x22C, 0x230 | 0x234, 0x238 |
+| Speler: record tactisch begrip (ptr, zie onder) | 0xF8 (niet gemeten) | 0x100 |
 | Interne persoons-id | identiteitsblok + 8 | identiteitsblok + 8 |
 | Speler-trainer: alles vanaf het persoonsblok verder met | 0xF8 | 0xF8 |
 
@@ -139,6 +142,19 @@ Development, 300–307 Physical, 400 Team Bonding, 401 Community, 402 reizen, 50
 **Opstellingen**: `simatch::PREPARED_TACTICS_CREATOR_ARRAY`, `+0x08` lijst, `+0x28` 26 × u32 persoons-id
 (0xFFFFFFFF = leeg). Lijstblokken van de allocator: Mac 144…4096, Windows 144…512 (`heap_blocks`).
 
+**Tactisch begrip** (FM27's "Tactical Understanding", de opvolger van tactical familiarity; gevonden op 8 nov 2026
+door FM's editor-actie `TEAM_MAXIMISE_TACTICAL_UNDERSTANDING_ACTION` te disassembleren, zie
+`agent/src/understanding.rs`): speler `+0x100` → record van 0xE0 bytes. Zes blokken van 0x20 (gebied 0–5: Passing
+Style, Build Up, Chance Creation, In Possession Shape, Line of Engagement, Pressing Intensity): (begin, end, cap)-lijst
+van u32-items (bits 0–13 niveau 0–10000, bits 14–19 tactiekinstelling 0–20, rest rommel) + u64 gebiedsnummer op
+`+0x18`; op `+0xC0` een lijst van 16-byte-items voor Pressing Trap en Out Of Possession Shape (u16 rol/positie, 11
+bytes vorm, u8 vlaggen, u16 niveau op `+0x0E`); `+0xD8` datum, `+0xDC` "veranderd". Begrip voor een instelling = max
+over items van (niveau − 1000 × afstand), bodem 1000. Maximaliseren zet elk item op 10000 en voegt de meest
+voorkomende instelling toe voor wie hem mist, alleen binnen de capaciteit van FM's lijst (geen eigen allocatie).
+Live getest op Windows (8 nov 2026, Ajax-save, 27 spelers). Het trainingsblok van TRAINING_MANAGER per team (zie
+boven) en `TACTICS_MANAGER` bevatten dit níét. Disassembleren kan met capstone (`pip install capstone`) op code die
+via `read` uit fm.exe komt; game_plugin.dll ligt op Windows ingepakt op schijf maar uitgepakt in het geheugen.
+
 ## Wat is getest, waar
 
 | | macOS (live, Ajax-save) | Windows |
@@ -146,6 +162,7 @@ Development, 300–307 Physical, 400 Team Bonding, 401 Community, 402 reizen, 50
 | uitlezen club/selectie/kalender | ✅ | ✅ (8 nov 2026, Ajax-save) |
 | budget, genezen, moraal, training schrijven, undo | ✅ | ✅ (8 nov 2026) |
 | verkopen (`sell`) | alleen simulatie | ✅ dry run én één echte verkoop + undo (8 nov 2026) |
+| tactisch begrip (`understanding`, `max_understanding`) | alleen simulatie (offset 0xF8 is een gok) | ✅ gelezen en gemaximaliseerd (8 nov 2026) |
 | MSVC-RTTI | n.v.t. | ✅ testdata én live (census, opstellingen) |
 
 ## Taak 1: Windows live controleren — gedaan (8 nov 2026)
@@ -206,6 +223,19 @@ FM27 gebruikt nepnamen voor clubs zonder licentie: AC Milan = **Casciavit Milano
   alleen bewaard. Balken: 11 plekken, één gekleurde (de stand) en één witte streep; stand = plek vanaf het
   eerste streepje / 10. De doorschijnende paneelachtergrond kan een deel van de streepjes in ruis zetten.
 - Windows-OCR leest "Player Buy-In" als "Player Buy-ln" (alias in `model.rs`).
+- **Resolutie-onafhankelijk sinds 8 nov 2026** (melding van een gebruiker: "Read 8 of 17 gauges", key factors
+  op 0 of 50): `analyze_image` leest eerst op ware grootte en, als de labels niet ~20 px hoog zijn (`REF_TEXT`,
+  de maat van 2560×1440 op 100 %), nog eens op een kopie die naar die maat is geschaald (zonder enig herkend
+  label: 1,5× en 2×); de meting op de referentiemaat wint bij gelijke stand. Verder: labels worden tolerant
+  gematcht (Levenshtein, ~1 letter per 6), een gemist label krijgt zijn rij uit de rij-afstand en de
+  meterkolom van de gevonden labels, en een kolom zonder enig label uit de kop "Key Factors" (eerste rij
+  2,15 × kophoogte eronder, meter = laatste ronde blok op de rij). Elke taartmeter wordt vóór het meten naar
+  72 px gebracht; de vulling is de aaneengesloten reeks gekleurde sectoren vanaf 12 uur (één sector gat =
+  spaak). De balkmeters worden gelezen als helderheidspieken (streepjes) met de kaderrand eruit (kolommen die
+  over meer dan 60 % van de hoogte licht zijn); de stand = plek van de gekleurde streep tussen eerste en laatste
+  streepje × 10. Getest door `last-breakdown.png` met Pillow te verkleinen naar 3840×2160 … 1280×720: alle 21
+  waarden gelijk van 1366×768 tot 4K; op 720p (sterk vervaagd) 15 van 17. `FM27_VISION_DEBUG=1` print de
+  balkmeting.
 - Elke uitlezing bewaart `last-capture.png` en, als er een Breakdown op stond, `last-breakdown.png` in
   `%APPDATA%\FM27 Trainer`; naspelen met `target\debug\fm27-trainer.exe analyze <png> --ocr`. Hulpscripts om
   pixels te bekijken stonden in de scratchpad van de sessie (pie_debug.py, montage.py); zo nodig opnieuw maken

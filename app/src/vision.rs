@@ -221,31 +221,77 @@ fn is_title(text: &str, alias: &str) -> bool {
     }
 }
 
+/// Bewerkingsafstand (Levenshtein) tussen twee korte teksten.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        for j in 1..=b.len() {
+            let sub = prev[j - 1] + usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = sub.min(prev[j] + 1).min(cur[j - 1] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
 /// Vindt de OCR-regel voor een label; geeft de regel en de x waar het label eindigt.
+///
+/// Op een klein scherm leest de OCR een letter nogal eens verkeerd ("Pressing IntensiW",
+/// "Tacticd Complexity"): een reeks woorden die op het label lijkt (een paar letters verschil,
+/// naar rato van de lengte) telt daarom ook, met voorkeur voor een exacte treffer.
 fn find_label<'a>(lines: &'a [OcrLine], label: &str) -> Option<(&'a OcrLine, f32)> {
     let want = norm(label);
+    let want_words = want.split(' ').count();
+    let allowed = if want.len() >= 8 { want.len() / 6 } else { 0 };
     let mut best: Option<(i32, &OcrLine, f32)> = None;
     for l in lines {
         let t = norm(&l.text);
-        let Some(pos) = t.find(&want) else { continue };
-        // label moet op woordgrenzen staan
-        let before_ok = pos == 0 || t.as_bytes()[pos - 1] == b' ';
-        let end = pos + want.len();
-        let after_ok = end == t.len() || t.as_bytes()[end] == b' ';
-        if !before_ok || !after_ok {
+        let words: Vec<&str> = t.split(' ').filter(|w| !w.is_empty()).collect();
+        if words.len() < want_words {
             continue;
         }
-        let extra = (t.len() - want.len()) as i32;
-        let score = if extra == 0 { 1000 } else { 500 - extra };
-        let n = t.chars().count().max(1) as f32;
-        let end_frac = t[..end].chars().count() as f32 / n;
-        let label_end = l.x0 + (l.x1 - l.x0) * end_frac;
-        if best.as_ref().is_none_or(|(s, _, _)| score > *s) {
-            best = Some((score, l, label_end));
+        for start in 0..=words.len() - want_words {
+            let window = words[start..start + want_words].join(" ");
+            let dist = if window == want { 0 } else { edit_distance(&window, &want) };
+            if dist > allowed {
+                continue;
+            }
+            let extra = (words.len() - want_words) as i32;
+            let score = 1000 - 100 * dist as i32 - extra;
+            // waar het label eindigt: naar rato van de tekens tot en met het venster
+            let upto: usize = words[..start + want_words].iter().map(|w| w.chars().count()).sum::<usize>() + start + want_words - 1;
+            let n = words.iter().map(|w| w.chars().count()).sum::<usize>() + words.len().saturating_sub(1);
+            let label_end = l.x0 + (l.x1 - l.x0) * upto as f32 / n.max(1) as f32;
+            if best.as_ref().is_none_or(|(s, _, _)| score > *s) {
+                best = Some((score, l, label_end));
+            }
         }
     }
     best.map(|(_, l, e)| (l, e))
 }
+
+/// De kolommen van de Breakdown, elk met zijn key factors van boven naar beneden. Een label dat de
+/// OCR mist, krijgt zijn plek uit de rij-afstand en de meter-kolom van de gevonden labels.
+const COLUMNS: &[&[Factor]] = &[
+    &[
+        Factor::InPossessionShape,
+        Factor::PassingStyle,
+        Factor::BuildUp,
+        Factor::ChanceCreation,
+        Factor::OutOfPossessionShape,
+        Factor::LineOfEngagement,
+        Factor::PressingIntensity,
+        Factor::PressingTrap,
+    ],
+    &[Factor::PlayerTacticalAbility, Factor::TacticalComplexity],
+    &[Factor::PlayerCapability, Factor::PlayerRoleSuitability],
+    &[Factor::ManagerialSupport, Factor::TeammatesAndStaffRelationships, Factor::ManagerTendencies],
+    &[Factor::QualityOfNextOppositionReport, Factor::OppositionPlayerKnowledge],
+];
 
 // ---------------------------------------------------------------- pixels
 
@@ -272,7 +318,8 @@ fn hsv(p: &image::Rgba<u8>) -> (f32, f32, f32) {
 /// Gekleurd deel van een meter: verzadigd, helder, tint rood…groen.
 fn is_colored(p: &image::Rgba<u8>) -> bool {
     let (h, s, v) = hsv(p);
-    s >= 0.42 && v >= 0.42 && (h <= 160.0 || h >= 345.0)
+    // na het (bilineair) herschalen van een kleine meter zijn de kleuren iets flauwer
+    s >= 0.36 && v >= 0.42 && (h <= 160.0 || h >= 345.0)
 }
 
 /// Middelgrijs (leeg) deel van een meter, zoals eerder op macOS gemeten. Let op: de lichtere
@@ -302,13 +349,28 @@ fn column_hits(img: &RgbaImage, x: u32, y0: u32, y1: u32, part: &Pred) -> u32 {
 /// segmenten), dan zoals voorheen met grijs; de achtergrond van een gemarkeerde rij geeft dan een
 /// veel te lange reeks en valt af.
 fn find_pie(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Option<GaugeShape> {
+    find_pies(img, x_start, x_limit, yc, th).into_iter().next()
+}
+
+/// De laatste taartmeter op de rij (voor een rij waarvan het label niet gelezen is: het label staat
+/// links, de meter is het laatste ronde blok vóór de volgende kolom).
+fn find_pie_last(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Option<GaugeShape> {
+    find_pies(img, x_start, x_limit, yc, th).into_iter().last()
+}
+
+/// Alle taartmeters tussen `x_start` en `x_limit` op de rij rond `yc`, van links naar rechts.
+fn find_pies(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Vec<GaugeShape> {
     let strict: Box<Pred> = Box::new(|p| is_colored(p) || is_light(p));
     let loose: Box<Pred> = Box::new(|p| is_colored(p) || is_gauge_grey(p));
-    find_pie_with(img, x_start, x_limit, yc, th, &*strict, &is_light).or_else(|| find_pie_with(img, x_start, x_limit, yc, th, &*loose, &is_gauge_grey))
+    let v = find_pies_with(img, x_start, x_limit, yc, th, &*strict, &is_light);
+    if !v.is_empty() {
+        return v;
+    }
+    find_pies_with(img, x_start, x_limit, yc, th, &*loose, &is_gauge_grey)
 }
 
 /// Kleine gaten (de donkere spaken tussen de taartpunten) breken een meter niet op.
-fn find_pie_with(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32, part: &Pred, empty: &Pred) -> Option<GaugeShape> {
+fn find_pies_with(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32, part: &Pred, empty: &Pred) -> Vec<GaugeShape> {
     let (w, h) = (img.width(), img.height());
     let band = (th * 1.0).max(6.0);
     let y0 = (yc - band).max(0.0) as u32;
@@ -320,32 +382,31 @@ fn find_pie_with(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32, 
     let max_run = (th * 3.2) as u32 + 4;
     let max_gap = ((th * 0.15) as u32).max(2);
 
+    let mut out = Vec::new();
     let mut run: Option<(u32, u32)> = None; // (begin, laatste treffer)
+    let mut finish = |run: Option<(u32, u32)>, out: &mut Vec<GaugeShape>| {
+        if let Some((rs, last)) = run {
+            let len = last + 1 - rs;
+            if len >= min_run && len <= max_run {
+                if let Some(g) = measure_pie(img, rs, last + 1, y0, y1, empty) {
+                    out.push(g);
+                }
+            }
+        }
+    };
     for x in xs..xe {
-        let hit = column_hits(img, x, y0, y1, part) >= need;
-        if hit {
+        if column_hits(img, x, y0, y1, part) >= need {
             run = Some(match run {
                 Some((rs, last)) if x - last <= max_gap + 1 => (rs, x),
-                Some((rs, last)) => {
-                    let len = last + 1 - rs;
-                    if len >= min_run && len <= max_run {
-                        if let Some(g) = measure_pie(img, rs, last + 1, y0, y1, empty) {
-                            return Some(g);
-                        }
-                    }
+                other => {
+                    finish(other, &mut out);
                     (x, x)
                 }
-                None => (x, x),
             });
         }
     }
-    if let Some((rs, last)) = run {
-        let len = last + 1 - rs;
-        if len >= min_run && len <= max_run {
-            return measure_pie(img, rs, last + 1, y0, y1, empty);
-        }
-    }
-    None
+    finish(run, &mut out);
+    out
 }
 
 #[derive(Clone, Debug)]
@@ -373,16 +434,26 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, empty: &Pred
     if ty0 == u32::MAX {
         return None;
     }
-    let cx = (xa as f32 + xb as f32 - 1.0) / 2.0;
-    let cy = (ty0 as f32 + ty1 as f32) / 2.0;
-    let r = ((xb - xa) as f32).max((ty1 - ty0 + 1) as f32) / 2.0;
+    // Altijd op een vaste maat meten: op een klein scherm (1366×768, of 1080p met een kleine
+    // UI-schaal) heeft een meter maar 12–18 px doorsnede, en dan hebben veel hoeksectoren geen
+    // enkele pixel. Vergroten (bilineair) voegt geen informatie toe, maar maakt de telling per
+    // sector wel betrouwbaar; de drempels hieronder gelden dan op elke resolutie.
+    const SIZE: f32 = 72.0;
+    let (sw, sh) = (xb - xa, ty1 - ty0 + 1);
+    let k = SIZE / sw.max(sh) as f32;
+    let sub = image::imageops::crop_imm(img, xa, ty0, sw, sh).to_image();
+    let pie = image::imageops::resize(&sub, ((sw as f32 * k).round() as u32).max(1), ((sh as f32 * k).round() as u32).max(1), image::imageops::FilterType::Triangle);
+    let (pw, ph) = (pie.width(), pie.height());
+    let cx = (pw as f32 - 1.0) / 2.0;
+    let cy = (ph as f32 - 1.0) / 2.0;
+    let r = pw.max(ph) as f32 / 2.0;
 
     const BINS: usize = 36;
     let mut col = [0u32; BINS];
     let mut gry = [0u32; BINS];
     let (mut hx, mut hy, mut ncol) = (0f32, 0f32, 0u32);
-    for y in ty0..=ty1 {
-        for x in xa..xb {
+    for y in 0..ph {
+        for x in 0..pw {
             let dx = x as f32 - cx;
             let dy = y as f32 - cy;
             let d = (dx * dx + dy * dy).sqrt();
@@ -395,7 +466,7 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, empty: &Pred
                 a += 360.0;
             }
             let bin = ((a / 360.0 * BINS as f32) as usize).min(BINS - 1);
-            let p = img.get_pixel(x, y);
+            let p = pie.get_pixel(x, y);
             if is_colored(p) {
                 col[bin] += 1;
                 let (h, _, _) = hsv(p);
@@ -411,18 +482,35 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, empty: &Pred
     if seen < BINS / 2 {
         return None;
     }
-    // De vulling loopt aaneengesloten met de klok mee vanaf 12 uur: de laatste sector met echt
-    // gekleurde pixels bepaalt het gevulde deel. De lichte spaken tussen de punten (en het lichte
-    // kruis in het midden) tellen zo niet als leeg.
-    let mut fill = 0.0f32;
-    for i in (0..BINS).rev() {
+    // De vulling loopt aaneengesloten met de klok mee vanaf 12 uur. Loop de sectoren langs: één
+    // sector zonder echte kleur is een lichte spaak tussen twee punten (of het lichte kruis in het
+    // midden) en breekt de reeks niet, twee op rij wel. De laatste gekleurde sector vóór die
+    // onderbreking bepaalt het gevulde deel; kleur die door het vergroten over de 12-uur-grens
+    // heen lekt (de sector vlak vóór 12 uur bij een niet-volle meter) telt zo niet mee.
+    let colored = |i: usize| {
         let total = (col[i] + gry[i]).max(1);
-        if col[i] >= 3 && col[i] * 4 >= total {
-            let frac = (col[i] as f32 / total as f32).min(1.0);
-            fill = (i as f32 + frac) / BINS as f32;
-            break;
+        col[i] >= 3 && col[i] * 4 >= total
+    };
+    let (mut last, mut gap) = (None, 0);
+    for i in 0..BINS {
+        if colored(i) {
+            last = Some(i);
+            gap = 0;
+        } else {
+            gap += 1;
+            if gap >= 2 {
+                break;
+            }
         }
     }
+    let mut fill = match last {
+        Some(i) => {
+            let total = (col[i] + gry[i]).max(1);
+            let frac = (col[i] as f32 / total as f32).min(1.0);
+            (i as f32 + frac) / BINS as f32
+        }
+        None => 0.0,
+    };
     // 10 segmenten: de lichte spaak op de grens snoept een paar procent af, dus afronden op een
     // heel segment als de meting daar dichtbij zit
     let tenths = (fill * 10.0).round();
@@ -461,64 +549,78 @@ fn read_bar(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Op
     let y1 = ((yc + th * 0.9) as u32).min(h);
     let xs = x_start.max(0.0) as u32;
     let xe = (x_limit as u32).min(w);
+    if xe <= xs + 4 || y1 <= y0 + 2 {
+        return None;
+    }
     let need = ((th * 0.45) as u32).max(3);
+    // Per kolom: de gekleurde streep (de stand), de helderheid van het lichtste derde van de pixels
+    // (een streepje is daar een piek in, ook als het op een klein scherm uitgesmeerd is en de
+    // tussenruimte niet meer echt donker wordt) en hoeveel van de kolom licht is (de rand van het
+    // kader loopt over de hele hoogte, een streepje maar over een deel).
     let mut marker: Vec<u32> = Vec::new();
-    let mut slots: Vec<u32> = Vec::new();
+    let mut prof: Vec<f32> = Vec::with_capacity((xe - xs) as usize);
+    let mut tall: Vec<f32> = Vec::with_capacity((xe - xs) as usize);
     for x in xs..xe {
-        let (mut c, mut g, mut l) = (0, 0, 0);
+        let mut vs: Vec<f32> = Vec::with_capacity((y1 - y0) as usize);
+        let mut c = 0;
         for y in y0..y1 {
             let p = img.get_pixel(x, y);
             if is_colored(p) {
                 c += 1;
-            } else if is_gauge_grey(p) {
-                g += 1;
-            } else if is_light(p) {
-                l += 1;
             }
+            vs.push(hsv(p).2);
         }
         if c >= need {
             marker.push(x);
-        } else if g >= need || l >= need {
-            slots.push(x);
         }
+        tall.push(vs.iter().filter(|v| **v > 0.45).count() as f32 / vs.len() as f32);
+        vs.sort_by(|a, b| b.total_cmp(a));
+        let top = (vs.len() / 3).max(1);
+        prof.push(vs[..top].iter().sum::<f32>() / top as f32);
     }
     if marker.is_empty() {
         return None;
     }
     let m = marker.iter().sum::<u32>() as f32 / marker.len() as f32;
-    // Kolommen samenvoegen tot streepjes (middelpunten); brede grijze vlakken (de rand van een
-    // paneel, een icoon) zijn geen streepjes.
-    let max_width = (th * 0.35).max(5.0);
+    // licht gladstrijken, dan de plaatselijke maxima die duidelijk boven hun omgeving uitsteken
+    let n = prof.len();
+    let smooth: Vec<f32> = (0..n).map(|i| (prof[i.saturating_sub(1)] + prof[i] + prof[(i + 1).min(n - 1)]) / 3.0).collect();
+    let pitch_guess = (th * 0.3).max(3.0);
+    let win = (pitch_guess * 0.7).round().max(1.0) as usize;
     let mut centers: Vec<f32> = Vec::new();
-    let mut run: Option<(u32, u32)> = None;
-    let mut flush = |run: Option<(u32, u32)>, centers: &mut Vec<f32>| {
-        if let Some((a, b)) = run {
-            if (b - a + 1) as f32 <= max_width {
-                centers.push((a + b) as f32 / 2.0);
+    let mut i = 1;
+    while i + 1 < n {
+        let v = smooth[i];
+        if v >= smooth[i - 1] && v >= smooth[i + 1] {
+            // een plateau is één piek: tot waar de waarde gelijk blijft
+            let mut j = i;
+            while j + 1 < n && smooth[j + 1] == v {
+                j += 1;
             }
+            let lo_l = smooth[i.saturating_sub(win)..i].iter().copied().fold(v, f32::min);
+            let lo_r = smooth[j + 1..(j + 1 + win).min(n)].iter().copied().fold(v, f32::min);
+            // een streepje beslaat ruwweg de halve hoogte van de band, de rand van het kader veel meer
+            let border = tall[i..=j].iter().copied().fold(0.0, f32::max) >= 0.6;
+            if v - lo_l.max(lo_r) >= 0.05 && !border {
+                centers.push(xs as f32 + (i + j) as f32 / 2.0);
+            }
+            i = j + 1;
+        } else {
+            i += 1;
         }
-    };
-    for x in slots {
-        run = match run {
-            Some((a, b)) if x == b + 1 => Some((a, x)),
-            other => {
-                flush(other, &mut centers);
-                Some((x, x))
-            }
-        };
     }
-    flush(run, &mut centers);
     centers.push(m);
     centers.sort_by(|a, b| a.total_cmp(b));
-    centers.dedup_by(|a, b| (*a - *b).abs() < 1.0);
-    // Vanaf de marker naar buiten lopen zolang de afstand tussen streepjes regelmatig blijft:
-    // de rand van de balk en losse vlakken verderop liggen verder uit elkaar en vallen af.
-    let mi = centers.iter().position(|c| (*c - m).abs() < 1.0)?;
+    centers.dedup_by(|a, b| (*a - *b).abs() < pitch_guess * 0.5);
+    // Vanaf de marker naar buiten lopen zolang de afstand tussen streepjes regelmatig blijft (één
+    // gemist streepje mag); de rand van het kader is al weg, losse vlakken verderop liggen verder
+    // uit elkaar en vallen af.
+    let mi = centers.iter().position(|c| (*c - m).abs() < pitch_guess * 0.5)?;
     let gaps: Vec<f32> = centers.windows(2).map(|w| w[1] - w[0]).collect();
     let mut sorted = gaps.clone();
     sorted.sort_by(|a, b| a.total_cmp(b));
     let typical = *sorted.get(sorted.len() / 2)?;
-    let limit = typical * 1.6;
+    let limit = typical * 2.6;
     let (mut lo_i, mut hi_i) = (mi, mi);
     while lo_i > 0 && centers[lo_i] - centers[lo_i - 1] <= limit {
         lo_i -= 1;
@@ -527,24 +629,73 @@ fn read_bar(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32) -> Op
         hi_i += 1;
     }
     let (lo, hi) = (centers[lo_i], centers[hi_i]);
-    if hi_i - lo_i < 3 || typical < 2.0 {
+    let span = hi - lo;
+    if hi_i - lo_i < 3 || typical < 2.0 || span <= 0.0 {
         return None;
     }
-    // De stand is de plek van de gekleurde streep, geteld vanaf het eerste streepje. FM27 tekent
-    // 11 plekken; staat een deel van de balk in ruis (de doorschijnende achtergrond van het paneel),
-    // dan blijft dat aantal het uitgangspunt.
-    let chain = ((hi - lo) / typical).round() as usize + 1;
-    let n = if chain >= 10 { chain } else { 11 };
-    let idx = ((m - lo) / typical).round().max(0.0);
-    Some((idx / (n - 1) as f32 * 100.0).clamp(0.0, 100.0))
+    if std::env::var_os("FM27_VISION_DEBUG").is_some() {
+        eprintln!("balk y={yc:.0} marker={m:.1} streepjes={centers:?} keten={lo:.1}..{hi:.1} stap={typical:.2}");
+    }
+    // FM27 tekent 11 plekken: de stand volgt uit de plek van de gekleurde streep tussen het eerste
+    // en het laatste streepje, zodat een streepje dat in de marker opgaat niet meetelt. Alleen als
+    // de reeks duidelijk korter is (een deel van de balk in ruis), telt de stap vanaf het eerste.
+    let slots = (span / typical).round() as usize + 1;
+    let idx = if (9..=12).contains(&slots) {
+        (m - lo) / span * 10.0
+    } else {
+        (m - lo) / typical
+    };
+    Some((idx.round().max(0.0) / 10.0 * 100.0).clamp(0.0, 100.0))
 }
 
 // ---------------------------------------------------------------- analyse
 
+/// Hoogte van de labels van de key factors zoals de OCR ze las (mediaan).
+fn label_height(lines: &[OcrLine]) -> Option<f32> {
+    let mut hs: Vec<f32> = Factor::ALL.iter().filter_map(|f| find_label(lines, f.label()).map(|(l, _)| l.height())).collect();
+    if hs.is_empty() {
+        return None;
+    }
+    hs.sort_by(|a, b| a.total_cmp(b));
+    Some(hs[hs.len() / 2])
+}
+
+/// De tekstgrootte waarop de meting is afgesteld: de labels van FM27 op 2560×1440 met 100 % schaal.
+const REF_TEXT: f32 = 20.0;
+
+/// Leest de Breakdown. Op een ander scherm (of een andere UI-schaal in FM) is alles groter of
+/// kleiner, en op een klein scherm leest de OCR slechter en zijn de meters te klein om te meten:
+/// dan nog eens op een kopie die naar de referentiegrootte is geschaald, en het beste resultaat
+/// telt. Zonder één herkend label worden twee vergrotingen geprobeerd.
 pub fn analyze_image(img: &RgbaImage) -> Result<(Analysis, Vec<OcrLine>)> {
     let lines = ocr(img)?;
-    let analysis = analyze_with_lines(img, &lines);
-    Ok((analysis, lines))
+    let mut best = (analyze_with_lines(img, &lines), lines);
+    let scales: Vec<f32> = match label_height(&best.1) {
+        Some(th) if (th - REF_TEXT).abs() / REF_TEXT > 0.12 => vec![REF_TEXT / th],
+        Some(_) => Vec::new(),
+        None => vec![1.5, 2.0],
+    };
+    for k in scales {
+        let (w, h) = ((img.width() as f32 * k).round() as u32, (img.height() as f32 * k).round() as u32);
+        if w < 64 || h < 64 || w > 10_000 || h > 10_000 {
+            continue;
+        }
+        let big = image::imageops::resize(img, w, h, image::imageops::FilterType::CatmullRom);
+        let lines2 = ocr(&big)?;
+        let mut a2 = analyze_with_lines(&big, &lines2);
+        // terug naar de maten van de opname
+        for g in &mut a2.gauges {
+            g.bbox = g.bbox.map(|v| (v as f32 / k).round() as u32);
+        }
+        a2.image_size = (img.width(), img.height());
+        let lines2: Vec<OcrLine> = lines2.into_iter().map(|l| OcrLine { x0: l.x0 / k, y0: l.y0 / k, x1: l.x1 / k, y1: l.y1 / k, ..l }).collect();
+        // op de referentiegrootte zijn de drempels afgesteld: die meting wint bij gelijke stand
+        let better = a2.gauges.len() >= best.0.gauges.len() && a2.components.len() >= best.0.components.len();
+        if better {
+            best = (a2, lines2);
+        }
+    }
+    Ok(best)
 }
 
 pub fn analyze_with_lines(img: &RgbaImage, lines: &[OcrLine]) -> Analysis {
@@ -579,6 +730,87 @@ pub fn analyze_with_lines(img: &RgbaImage, lines: &[OcrLine]) -> Analysis {
             None => missing.push(f),
         }
     }
+
+    // Labels die de OCR niet (goed) las: de rijen van een kolom liggen even ver uit elkaar en de
+    // meters van een kolom staan recht onder elkaar, dus uit de gevonden rijen volgt waar de
+    // andere moeten zitten. De meter wordt dan alleen in die smalle kolom gezocht.
+    let row = |f: Factor| -> Option<(usize, usize)> { COLUMNS.iter().enumerate().find_map(|(c, col)| col.iter().position(|x| *x == f).map(|i| (c, i))) };
+    let found: Vec<(Factor, f32, f32, [u32; 4])> = gauges
+        .iter()
+        .filter_map(|g| label_hits.iter().find(|(f, _, _)| *f == g.factor).map(|(_, l, _)| (g.factor, l.yc(), l.height().max(4.0), g.bbox)))
+        .collect();
+    let mut pitches: Vec<f32> = Vec::new();
+    for a in &found {
+        for b in &found {
+            if let (Some((ca, ia)), Some((cb, ib))) = (row(a.0), row(b.0)) {
+                if ca == cb && ib > ia {
+                    pitches.push((b.1 - a.1) / (ib - ia) as f32);
+                }
+            }
+        }
+    }
+    pitches.sort_by(|a, b| a.total_cmp(b));
+    let pitch = pitches.get(pitches.len() / 2).copied();
+
+    // De kop "Key Factors" boven elke kolom: voor een kolom waarvan geen enkel label gelezen is,
+    // geeft die de plek van de eerste rij (2,15 × de kophoogte eronder) en de linkerkant van de
+    // kolom; de volgende kop (of de rand) begrenst de kolom rechts.
+    let mut heads: Vec<&OcrLine> = lines
+        .iter()
+        .filter(|l| {
+            let t = norm(&l.text);
+            t == "key factors" || (t.len() >= 9 && edit_distance(&t, "key factors") <= 2)
+        })
+        .collect();
+    // in leesvolgorde: op een smal scherm kunnen de panelen in twee rijen staan
+    let band = |l: &OcrLine| (l.yc() / (l.height().max(4.0) * 8.0)).floor();
+    heads.sort_by(|a, b| band(a).total_cmp(&band(b)).then(a.x0.total_cmp(&b.x0)));
+    let mut head_of: Vec<Option<&OcrLine>> = vec![None; COLUMNS.len()];
+    for (c, col) in COLUMNS.iter().enumerate() {
+        // de kop staat boven de labels van de kolom, op ongeveer dezelfde x
+        if let Some((_, l0, _)) = label_hits.iter().find(|(f, _, _)| col.contains(f)) {
+            head_of[c] = heads
+                .iter()
+                .copied()
+                .filter(|k| k.yc() < l0.yc() && (k.x0 - l0.x0).abs() < l0.height() * 4.0)
+                .min_by(|a, b| (l0.yc() - a.yc()).total_cmp(&(l0.yc() - b.yc())));
+        }
+    }
+    let open: Vec<usize> = (0..COLUMNS.len()).filter(|c| head_of[*c].is_none()).collect();
+    let rest: Vec<&OcrLine> = heads.iter().copied().filter(|k| !head_of.iter().flatten().any(|a| std::ptr::eq(*a, *k))).collect();
+    if rest.len() == open.len() {
+        // de overgebleven koppen horen op volgorde bij de overgebleven kolommen
+        for (c, k) in open.into_iter().zip(rest) {
+            head_of[c] = Some(k);
+        }
+    }
+
+    let still_missing: Vec<Factor> = missing.clone();
+    for f in still_missing {
+        let Some((c, i)) = row(f) else { continue };
+        let in_col: Vec<&(Factor, f32, f32, [u32; 4])> = found.iter().filter(|(g, _, _, _)| row(*g).is_some_and(|(cg, _)| cg == c)).collect();
+        let hit = if let Some(near) = in_col.iter().min_by_key(|(g, _, _, _)| row(*g).map(|(_, ig)| ig.abs_diff(i)).unwrap_or(usize::MAX)) {
+            // zelfde kolom, andere rij: de meters staan recht onder elkaar
+            let (g, yc, th, bbox) = **near;
+            let Some((_, ig)) = row(g) else { continue };
+            let y = yc + (i as f32 - ig as f32) * pitch.unwrap_or(th * 2.45);
+            (y >= 0.0 && y < img.height() as f32).then(|| find_pie(img, bbox[0] as f32 - th, bbox[2] as f32 + th, y, th)).flatten()
+        } else if let Some(k) = head_of[c] {
+            // niets gelezen in deze kolom: vanaf de kop, de meter is het laatste ronde blok op de rij
+            let th = k.height().max(4.0);
+            let y = k.yc() + th * 2.15 + i as f32 * pitch.unwrap_or(th * 2.9);
+            let right = heads.iter().filter(|o| o.x0 > k.x0 + th && (o.yc() - k.yc()).abs() < th * 8.0).map(|o| o.x0 - th).fold(w, f32::min);
+            (y >= 0.0 && y < img.height() as f32).then(|| find_pie_last(img, k.x0, right, y, th * 1.15)).flatten()
+        } else {
+            None
+        };
+        if let Some(g) = hit {
+            let score = gauge_score(g.fill, g.hue, g.fill > 0.0);
+            gauges.push(GaugeReading { factor: f, score, fill: g.fill, hue: g.hue, bbox: g.bbox });
+            missing.retain(|m| *m != f);
+        }
+    }
+    gauges.sort_by_key(|g| Factor::ALL.iter().position(|f| *f == g.factor));
 
     let mut components = Vec::new();
     for c in Component::ALL {

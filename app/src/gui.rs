@@ -1033,9 +1033,68 @@ impl App {
             self.connect_card(ui, ctx);
             return;
         }
+        // tactisch begrip (FM: Tactical Understanding), te maximaliseren zoals FM's in-game editor dat kan
+        let tu = self.live.understanding.clone();
+        let tu_players: std::collections::HashMap<u64, f32> = tu
+            .as_ref()
+            .and_then(|u| u.get("players"))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| {
+                        let uid = p.get("uid")?.as_u64()?;
+                        let levels: Vec<f32> = p.get("levels")?.as_array()?.iter().filter_map(|x| x.as_u64()).map(|x| x as f32 / 100.0).collect();
+                        (!levels.is_empty()).then(|| (uid, levels.iter().sum::<f32>() / levels.len() as f32))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         theme::card(ui, |ui| {
-            egui::Grid::new("squad").num_columns(7).spacing([18.0, 10.0]).striped(true).show(ui, |ui| {
-                for h in [t!("Speler", "Player"), t!("Moraal", "Morale"), t!("Conditie", "Condition"), t!("Blessure", "Injury"), t!("Schorsing", "Ban"), t!("Ontevreden", "Unhappy"), ""] {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(theme::h2(t!("Tactisch begrip", "Tactical understanding")));
+                    ui.add(
+                        egui::Label::new(theme::faint(t!(
+                            "Hoe goed de selectie je huidige tactiek kent, per onderdeel (gemiddelde van de spelers). Maximaliseren doet wat de in-game editor van FM doet: alles naar 100 %.",
+                            "How well the squad knows your current tactic, per area (average over the players). Maximise does what FM's in-game editor does: everything to 100%."
+                        )))
+                        .wrap(),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if theme::primary_button(ui, icon::BRAIN, t!("Maximaliseer tactisch begrip", "Maximise tactical understanding"), connected && !busy).clicked() {
+                        action = Some((t!("tactisch begrip", "tactical understanding").into(), json!({"cmd": "max_understanding"})));
+                    }
+                });
+            });
+            match tu.as_ref().and_then(|u| u.get("team")).and_then(|v| v.as_array()) {
+                Some(team) if !team.is_empty() => {
+                    ui.add_space(6.0);
+                    // twee rijen van vier: in bezit, dan zonder bal
+                    for row in team.iter().take(UNDERSTANDING_AREAS.len()).enumerate().collect::<Vec<_>>().chunks(4) {
+                        ui.horizontal(|ui| {
+                            for (i, v) in row {
+                                let pct = v.as_u64().unwrap_or(0) as f32 / 100.0;
+                                theme::pill(ui, &format!("{} · {pct:.0}%", UNDERSTANDING_AREAS[*i]), theme::rgb(level_color(pct)));
+                            }
+                        });
+                    }
+                    let without = tu.as_ref().and_then(|u| u.get("without_record")).and_then(|v| v.as_u64()).unwrap_or(0);
+                    if without > 0 {
+                        ui.label(theme::faint(t!(
+                            format!("{without} spelers hebben nog geen begrip-record (nog niet met dit team getraind); die doen pas na een week training mee."),
+                            format!("{without} players have no understanding record yet (not trained with this team yet); they join after a week of training.")
+                        )));
+                    }
+                }
+                _ => {
+                    ui.label(theme::faint(t!("Nog niet uitgelezen.", "Not read yet.")));
+                }
+            }
+        });
+        theme::card(ui, |ui| {
+            egui::Grid::new("squad").num_columns(8).spacing([18.0, 10.0]).striped(true).show(ui, |ui| {
+                for h in [t!("Speler", "Player"), t!("Moraal", "Morale"), t!("Conditie", "Condition"), t!("Begrip", "Understanding"), t!("Blessure", "Injury"), t!("Schorsing", "Ban"), t!("Ontevreden", "Unhappy"), ""] {
                     ui.label(theme::caps(h));
                 }
                 ui.end_row();
@@ -1049,6 +1108,14 @@ impl App {
                         ui.set_width(90.0);
                         theme::progress(ui, cond, 6.0, theme::rgb(level_color(cond)));
                     });
+                    match tu_players.get(&uid) {
+                        Some(pct) => {
+                            theme::pill(ui, &format!("{pct:.0}%"), theme::rgb(level_color(*pct)));
+                        }
+                        None => {
+                            ui.label(theme::faint("—"));
+                        }
+                    }
                     let inj: Vec<String> = p
                         .get("injuries")
                         .and_then(|v| v.as_array())
@@ -1499,6 +1566,9 @@ fn money(v: i64) -> String {
     let s = if a >= 1e6 { format!("{:.1} M", a / 1e6) } else if a >= 1e3 { format!("{:.0}k", a / 1e3) } else { format!("{a:.0}") };
     if v < 0 { format!("-{s}") } else { s }
 }
+
+/// De acht onderdelen van FM's Tactical Understanding, in de volgorde van de module.
+const UNDERSTANDING_AREAS: [&str; 8] = ["Passing Style", "Build Up", "Chance Creation", "In Possession Shape", "Line of Engagement", "Pressing Intensity", "Pressing Trap", "Out Of Possession Shape"];
 
 fn morale_label(m: u64) -> &'static str {
     match m {

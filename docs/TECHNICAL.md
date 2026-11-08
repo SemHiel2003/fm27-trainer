@@ -73,6 +73,7 @@ simulated memory for tests), `rtti.rs` (Itanium and MSVC RTTI) and `game.rs` (la
 | Finances | `club+0x150` → balance `+0x0C`, transfer budget `+0x7C4`, total wage `+0x808`, wage budget `+0x814` (i32, pounds) |
 | Squad | `team+0x38` = list (begin, end, cap) of player objects |
 | Player | morale `+0x264` (u8, 1–20), condition `+0x254`, sharpness `+0x250`, injury record `+0xF0`, contract `+0x2F0`, UID `+0x394`, names `+0x298/+0x2A0/+0x2A8` (player-coaches shift person fields by `+0xF8`) |
+| Tactical understanding | player `+0x100` on Windows (`+0xF8` expected on macOS, unverified) → a 0xE0-byte record, see below |
 | Injuries | injury record starts with a list of current injuries; the game heals by setting `end = begin`; absences (bans have `0xFFFF` at `+0x16`) at record `+0x18` |
 | Happiness | contract `+0x5A` (i16), reasons-to-be-unhappy pointer at contract `+0x30` |
 | In-game date | `team+0xA0` → `+0x94`: u16 day-of-year (low 9 bits) + u16 year |
@@ -80,6 +81,25 @@ simulated memory for tests), `rtti.rs` (Itanium and MSVC RTTI) and `game.rs` (la
 
 Player, contract, club and finance offsets match the public layout files of FMLibreEditor and FMSuperScout;
 the training calendar and in-game date path were measured for this project.
+
+## Tactical understanding
+
+FM27's *Tactical Understanding* (the successor of tactical familiarity) is stored per player. The layout was
+found by disassembling FM's own in-game editor action `TEAM_MAXIMISE_TACTICAL_UNDERSTANDING_ACTION` in the running
+`game_plugin.dll` (Windows, 8 November 2026; see `agent/src/understanding.rs`). The player points (Windows `+0x100`)
+to a 0xE0-byte record:
+
+| Offset | Content |
+|---|---|
+| `+0x00`–`+0xBF` | six 0x20-byte blocks, one per area (0 Passing Style, 1 Build Up, 2 Chance Creation, 3 In Possession Shape, 4 Line of Engagement, 5 Pressing Intensity): a (begin, end, cap) list of `u32` items and the area number at `+0x18`. Item: bits 0–13 the level (0–10000), bits 14–19 the tactic setting (0–20, 10 = balanced), the rest unused. At most 20 items. |
+| `+0xC0` | a (begin, end, cap) list of 16-byte items for Pressing Trap and Out Of Possession Shape: `u16` role/position code (bit 13 tells the two areas apart), 11 bytes describing the shape, a flag byte, and the level (`u16`) at `+0x0E` |
+| `+0xD8` | a date; `+0xDC` a byte FM sets to 1 after a change |
+
+A player's understanding of a setting is the highest item level minus 1000 per step of distance to that setting,
+with a floor of 1000 (10 %). FM's "maximise" adds 10000 to the items of the manager's tactics and clamps at 10000.
+The app sets every existing item to 10000 and adds the setting most players know for anyone who lacks it, but
+only while FM's list has capacity left (the game's allocator cannot be called from outside); players without a
+record (never trained with the team) are skipped. Live-tested on Windows (Ajax save, 27 players).
 
 ## Session codes
 
@@ -109,9 +129,19 @@ in a save (for example day `[200, 3, 7]` = Individual Development / In Possessio
 
 ## Screen reading
 
+Reading is independent of the screen size and FM's UI scale: the capture is analysed at its own size and, when
+the key-factor labels are not about 20 px high (the size of 2560×1440 at 100 %), again on a copy scaled to that
+size; the result at the reference size wins on a tie. Labels are matched tolerantly (one letter per six may be
+misread), a label the OCR missed gets its row from the row pitch and the pie column of the labels that were
+found, and a column without any label is anchored on its "Key Factors" header (first row 2.15 header heights
+below it, the pie being the last round blob on the row). The component bars are read as brightness peaks (the
+ticks), with the frame border excluded, and the level is the coloured tick's position between the first and
+last tick. Tested by downscaling a 2560×1440 capture to 1366×768 and upscaling it to 4K: all 21 values identical.
+
 The Breakdown pies have 10 segments and fill clockwise from 12 o'clock; the empty segments are near-white
-(measured on Windows, 8 November 2026) and the spokes between segments are light too. Each pie is measured in
-36 angular sectors: the last sector that is really coloured gives the filled share, which is the score (4 of 10
+(measured on Windows, 8 November 2026) and the spokes between segments are light too. Each pie is first resampled
+to 72 px (on a 1366×768 screen a pie is only 12–18 px across, which left many sectors without a single pixel and
+made gauges disappear or read 0) and then measured in 36 angular sectors: the last sector that is really coloured gives the filled share, which is the score (4 of 10
 segments = 40). The hue runs along with it (orange low, yellow middle, green high) and is only kept for
 information. Candidate pies are found by their coloured and near-white pixels, with the older mid-grey look as a
 fallback, because the lighter background of a highlighted row would otherwise pass for an empty gauge. The

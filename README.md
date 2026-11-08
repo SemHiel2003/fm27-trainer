@@ -54,6 +54,10 @@ back. The activity log shows exactly what FM wanted and what was restored.
 **Club tools.** Set the transfer and wage budget, heal injuries, lift suspensions, and bring morale back to the
 top. Every change can be undone, and it only sticks once you save in FM.
 
+**Tactical understanding.** The Squad page shows how well the squad knows your current tactic, per area, and can
+maximise it with one click, like FM's in-game editor does: every player's understanding of every setting goes to
+100 %. Players who have never trained with the team yet are skipped until they have.
+
 <p align="center">
   <img src="docs/images/club.png" alt="Club page with balance, transfer and wage budget" width="49%">
   <img src="docs/images/squad.png" alt="Squad page with morale, condition, injuries and actions" width="49%">

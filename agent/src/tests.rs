@@ -106,6 +106,9 @@ struct World {
     p1_injuries: u64,
     p2_absences: u64,
     weeks: Vec<u64>,
+    /// begrip-records van speler 1 en 2
+    tu1: u64,
+    tu2: u64,
 }
 
 /// Bouwt een FM-wereld: manager → contract → team → club → financiën, twee spelers (een gewone en
@@ -194,6 +197,48 @@ fn build_world(l: &Layout, plugin_base: u64, staff_rva: u64, date_rva: Option<u6
     let callup = h.alloc(0x20);
     h.list(rec2 + 0x18, &[ban, callup]);
 
+    // tactisch begrip: speler 1 kent instelling 10 (en voor Passing Style ook 19) en heeft volle
+    // lijsten; speler 2 kent 10 behalve voor Passing Style, met in elke lijst ruimte over
+    let tu1 = h.alloc(0xE0);
+    let tu2 = h.alloc(0xE0);
+    for a in 0..6u64 {
+        let items: &[u32] = if a == 0 { &[0x4F6 << 20 | 10 << 14 | 4384, 19 << 14 | 600] } else { &[10 << 14 | 5000] };
+        let arr = h.alloc(items.len() * 4);
+        for (i, it) in items.iter().enumerate() {
+            h.w32(arr + i as u64 * 4, *it);
+        }
+        let blk = tu1 + a * 0x20;
+        h.w64(blk, arr);
+        h.w64(blk + 8, arr + items.len() as u64 * 4);
+        h.w64(blk + 16, arr + items.len() as u64 * 4);
+        h.w64(blk + 0x18, a);
+        // speler 2: voor Passing Style nog niets (lege lijst met ruimte voor twee items), verder 10
+        let arr = h.alloc(8);
+        h.w32(arr, 0xDEAD_0000); // rommel in het ongebruikte deel, zoals in FM
+        h.w32(arr + 4, 0xDEAD_0000);
+        let n = if a == 0 { 0 } else { h.w32(arr, 10 << 14 | 2500); 1 };
+        let blk = tu2 + a * 0x20;
+        h.w64(blk, arr);
+        h.w64(blk + 8, arr + 4 * n);
+        h.w64(blk + 16, arr + 8);
+        h.w64(blk + 0x18, a);
+    }
+    // vormen: Pressing Trap (bit 13 van de instelling uit) en Out Of Possession Shape (aan)
+    let shapes = h.alloc(32);
+    for (i, setting) in [0x18B4u16, 0x3934].iter().enumerate() {
+        let it = shapes + i as u64 * 16;
+        h.w16(it, *setting);
+        h.put(it + 2, &[0xF6, 0xF4, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0]);
+        h.w16(it + 0x0E, 3984);
+    }
+    h.w64(tu1 + 0xC0, shapes);
+    h.w64(tu1 + 0xC8, shapes + 32);
+    h.w64(tu1 + 0xD0, shapes + 32);
+    h.put(tu1 + 0xD8, &date_bytes(2026, 286));
+    h.put(tu2 + 0xD8, &date_bytes(2026, 286));
+    h.w64(p1 + l.p_understanding, tu1);
+    h.w64(p2 + l.p_understanding, tu2);
+
     // iemand van een ander team in de lijst: hoort niet in de selectie
     let stranger = h.alloc(0x500);
     h.w64(stranger + l.p_team, 0x5_0000_0000);
@@ -233,7 +278,7 @@ fn build_world(l: &Layout, plugin_base: u64, staff_rva: u64, date_rva: Option<u6
 
     h.install(true);
     statics.install(false);
-    World { finance, p1, p2, p1_contract: c1, p1_injuries: inj_rec, p2_absences: rec2 + 0x18, weeks }
+    World { finance, p1, p2, p1_contract: c1, p1_injuries: inj_rec, p2_absences: rec2 + 0x18, weeks, tu1, tu2 }
 }
 
 fn i32_at(a: u64) -> i32 {
@@ -321,6 +366,50 @@ fn run_world(l: &'static Layout, w: &World) {
     call(json!({"cmd": "undo"})).unwrap();
     assert_eq!(mem::u8_at(w.p1 + l.p_morale), Some(9));
     assert_eq!(mem::u64_at(w.p1_contract + 0x30), Some(0xDEAD_BEE8));
+
+    // tactisch begrip: lezen
+    let u = call(json!({"cmd": "understanding"})).unwrap();
+    assert_eq!(u["keys"], json!([10, 10, 10, 10, 10, 10]), "de instelling die de meeste spelers kennen");
+    assert_eq!(u["without_record"], 0);
+    let by_uid = |u: &Value, uid: u64| u["players"].as_array().unwrap().iter().find(|p| p["uid"] == uid).cloned().unwrap();
+    let k = by_uid(&u, 111);
+    assert_eq!(k["levels"], json!([4384, 5000, 5000, 5000, 5000, 5000, 3984, 3984]));
+    assert_eq!(k["areas"][0], json!([[10, 4384], [19, 600]]));
+    let j = by_uid(&u, 222);
+    assert_eq!(j["levels"], json!([1000, 2500, 2500, 2500, 2500, 2500, 1000, 1000]), "zonder items geldt de bodem van 1000");
+    assert_eq!(u["team"][1], 3750);
+
+    // maximaliseren: eerst alleen tellen, dan echt
+    let dry = call(json!({"cmd": "max_understanding", "dry_run": true})).unwrap();
+    assert_eq!(dry["players"], 2);
+    assert_eq!(dry["items"], 9 + 5, "7 items + 2 vormen van speler 1, 5 items van speler 2");
+    assert_eq!(dry["added"], 1, "speler 2 krijgt instelling 10 voor Passing Style erbij");
+    assert_eq!(dry["no_room"], 0);
+    assert_eq!(mem::u32_at(mem::u64_at(w.tu1).unwrap()), Some(0x4F6 << 20 | 10 << 14 | 4384), "dry run verandert niets");
+    let r = call(json!({"cmd": "max_understanding"})).unwrap();
+    assert_eq!(r["items"], 14);
+    assert_eq!(r["added"], 1);
+    let a0 = mem::u64_at(w.tu1).unwrap();
+    assert_eq!(mem::u32_at(a0), Some(0x4F6 << 20 | 10 << 14 | 10000), "niveau op 10000, de andere bits blijven");
+    assert_eq!(mem::u32_at(a0 + 4), Some(19 << 14 | 10000));
+    let shapes = mem::u64_at(w.tu1 + 0xC0).unwrap();
+    assert_eq!(mem::u16_at(shapes + 0x0E), Some(10000));
+    assert_eq!(mem::u16_at(shapes + 16 + 0x0E), Some(10000));
+    assert_eq!(mem::u16_at(shapes + 16), Some(0x3934), "de rest van het item blijft");
+    let b0 = mem::u64_at(w.tu2).unwrap();
+    assert_eq!(mem::u64_at(w.tu2 + 8), Some(b0 + 4), "lijst van speler 2 heeft nu één item");
+    assert_eq!(mem::u32_at(b0), Some(10 << 14 | 10000));
+    assert_eq!(mem::u32_at(b0 + 4), Some(0xDEAD_0000), "voorbij het einde blijft alles staan");
+    assert_eq!(mem::u8_at(w.tu1 + 0xDC), Some(1), "veranderd-vlag zoals FM hem zet");
+    let u = call(json!({"cmd": "understanding"})).unwrap();
+    assert_eq!(by_uid(&u, 222)["levels"], json!([10000, 10000, 10000, 10000, 10000, 10000, 1000, 1000]), "zonder vorm-items blijft de bodem");
+    assert_eq!(u["team"][0], 10000);
+    assert_eq!(call(json!({"cmd": "undo"})).unwrap()["undone"].as_str().unwrap(), "tactisch begrip / tactical understanding");
+    assert_eq!(mem::u32_at(a0), Some(0x4F6 << 20 | 10 << 14 | 4384));
+    assert_eq!(mem::u64_at(w.tu2 + 8), Some(b0), "lijst van speler 2 is weer leeg");
+    assert_eq!(mem::u32_at(b0), Some(0xDEAD_0000), "de rommel staat er weer");
+    assert_eq!(mem::u8_at(w.tu1 + 0xDC), Some(0));
+    assert_eq!(mem::u16_at(shapes + 0x0E), Some(3984));
 }
 
 /// Een PE-header van game_plugin.dll zoals FM27 Steam-build 26340721 hem heeft.

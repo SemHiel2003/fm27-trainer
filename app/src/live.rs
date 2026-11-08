@@ -18,6 +18,7 @@ use crate::t;
 struct Snapshot {
     club: Option<Value>,
     squad: Option<Vec<Value>>,
+    understanding: Option<Value>,
     message: String,
     error: bool,
     untested: Option<bool>,
@@ -66,6 +67,8 @@ pub struct LiveState {
     pub fm_had: HashMap<NaiveDate, [u16; 3]>,
     pub club: Option<Value>,
     pub squad: Vec<Value>,
+    /// tactisch begrip van de selectie (opdracht `understanding`)
+    pub understanding: Option<Value>,
     pub training: Option<Outcome>,
     pub status: String,
     pub status_error: bool,
@@ -95,6 +98,7 @@ impl Default for LiveState {
             fm_had: HashMap::new(),
             club: None,
             squad: Vec::new(),
+            understanding: None,
             training: None,
             status: String::new(),
             status_error: false,
@@ -116,6 +120,19 @@ impl Default for LiveState {
 
 fn short_result(v: &Value) -> String {
     match v {
+        Value::Object(m) if m.contains_key("added") => {
+            let mut s = t!(
+                format!("({} spelers, {} waarden naar 100 %, {} toegevoegd", m["players"], m["items"], m["added"]),
+                format!("({} players, {} values to 100%, {} added", m["players"], m["items"], m["added"])
+            );
+            if m.get("no_room").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
+                s += &t!(
+                    format!("; bij {} spelers is de lijst vol: train een week en probeer opnieuw", m["no_room"]),
+                    format!("; {} players have a full list: train a week and try again", m["no_room"])
+                );
+            }
+            s + ")"
+        }
         Value::Object(m) if m.contains_key("players") => format!("({} {})", m["players"], t!("spelers", "players")),
         Value::Object(m) if m.contains_key("bans") => format!("({} {})", m["bans"], t!("schorsingen", "bans")),
         Value::Object(m) if m.contains_key("undone") => format!("({})", m["undone"].as_str().unwrap_or("")),
@@ -206,6 +223,9 @@ impl LiveState {
                 if let Ok(Value::Array(a)) = agent::request(json!({"cmd": "squad"})) {
                     snap.squad = Some(a);
                 }
+                if let Ok(u) = agent::request(json!({"cmd": "understanding"})) {
+                    snap.understanding = Some(u);
+                }
                 // onbekende FM-versie: de module staat dan op alleen-lezen
                 if let Ok(p) = agent::request(json!({"cmd": "ping"})) {
                     let untested = p.get("known_build").and_then(|v| v.as_bool()) == Some(false);
@@ -282,6 +302,9 @@ impl LiveState {
                 }
                 if let Some(sq) = s.squad {
                     self.squad = sq;
+                }
+                if let Some(u) = s.understanding {
+                    self.understanding = Some(u);
                 }
                 if let Some(u) = s.untested {
                     self.untested_build = u;
