@@ -37,6 +37,8 @@ objc2-vision = { version = "0.3.2", default-features = false, features = [
 ] }
 
 [target.'cfg(windows)'.dependencies]
+# de spellogica van de module; op Windows leest de app fm.exe van buitenaf
+fm27-agent = { path = "../agent" }
 windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Win32_System_WinRT"] }
 
 [build-dependencies]

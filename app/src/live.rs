@@ -20,6 +20,7 @@ struct Snapshot {
     squad: Option<Vec<Value>>,
     message: String,
     error: bool,
+    untested: Option<bool>,
 }
 
 /// Regel in het logboek van de trainingspagina.
@@ -48,6 +49,10 @@ pub struct LiveState {
     pub train_error: bool,
     pub transfer_input: String,
     pub wage_input: String,
+    /// Aanpassen op een FM-build die nog niet live getest is (instelling van de gebruiker).
+    pub allow_untested: bool,
+    /// De build van FM is niet getest: de module staat op alleen lezen (tenzij toegestaan).
+    pub untested_build: bool,
     rx: Option<mpsc::Receiver<Snapshot>>,
     train_rx: Option<mpsc::Receiver<(bool, bool, Result<Outcome, String>)>>,
     last_auto: Option<Instant>,
@@ -71,6 +76,8 @@ impl Default for LiveState {
             train_error: false,
             transfer_input: String::new(),
             wage_input: String::new(),
+            allow_untested: false,
+            untested_build: false,
             rx: None,
             train_rx: None,
             last_auto: None,
@@ -105,8 +112,11 @@ impl LiveState {
         let (tx, rx) = mpsc::channel();
         let ctx2 = ctx.clone();
         let label = label.to_string();
+        let allow = self.allow_untested;
         std::thread::spawn(move || {
             let mut snap = Snapshot::default();
+            // eerst de keuze van de gebruiker doorgeven (oudere modules kennen dit niet: geen probleem)
+            let _ = agent::request(json!({"cmd": "allow_untested", "on": allow}));
             if let Some(req) = action {
                 match agent::request(req) {
                     Ok(v) => snap.message = format!("{label}: {} {}", t!("klaar", "done"), short_result(&v)),
@@ -131,10 +141,13 @@ impl LiveState {
                 }
                 // onbekende FM-versie: de module staat dan op alleen-lezen
                 if let Ok(p) = agent::request(json!({"cmd": "ping"})) {
-                    if p.get("known_build").and_then(|v| v.as_bool()) == Some(false) {
+                    let untested = p.get("known_build").and_then(|v| v.as_bool()) == Some(false);
+                    snap.untested = Some(untested);
+                    let allowed = p.get("untested_writes").and_then(|v| v.as_bool()) == Some(true);
+                    if untested && !allowed && snap.message.is_empty() {
                         snap.message = t!(
-                            "Deze FM-versie is nog niet getest met FM27 Trainer: alleen lezen. Update de app voor aanpassingen.",
-                            "This FM build has not been verified with FM27 Trainer yet: read-only. Update the app to make changes."
+                            "Deze FM-versie is nog niet getest met FM27 Trainer: alleen lezen. Controleer of club en selectie kloppen met FM; aanpassen kun je in Instellingen aanzetten.",
+                            "This FM build has not been verified with FM27 Trainer yet: read-only. Check that club and squad match FM; you can allow changes in Settings."
                         )
                         .into();
                         snap.error = true;
@@ -203,6 +216,9 @@ impl LiveState {
                 if let Some(sq) = s.squad {
                     self.squad = sq;
                 }
+                if let Some(u) = s.untested {
+                    self.untested_build = u;
+                }
                 if !s.message.is_empty() || was != self.connected {
                     self.status = if s.message.is_empty() { t!("Verbonden met FM27.", "Connected to FM27.").into() } else { s.message };
                     self.status_error = s.error;
@@ -261,14 +277,15 @@ impl LiveState {
         }
         // verbinding bijhouden: elke 20 s (of meteen als er een socket is maar nog geen verbinding)
         let due = self.last_poll.is_none_or(|t| t.elapsed().as_secs() >= if self.connected { 20 } else { 5 });
-        if due && !self.busy() && crate::data_dir().join("agent.sock").exists() {
+        if due && !self.busy() && agent::module_ready() {
             self.last_poll = Some(Instant::now());
             self.refresh(ctx, "", None);
         }
         // nieuwe effectiveness → komende weken opnieuw plannen
         // automatische modus: alle komende weken volgens plan houden. FM bouwt een week opnieuw op als
         // de wedstrijden erin veranderen (loting, verplaatsing); dat zetten we hier weer recht.
-        if auto && self.connected && !self.busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 8) {
+        let read_only = self.untested_build && !self.allow_untested;
+        if auto && self.connected && !read_only && !self.busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 8) {
             self.last_auto = Some(Instant::now());
             self.training_job(ctx, eff, settings, true, false, true);
         }

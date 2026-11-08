@@ -1,22 +1,91 @@
 //! FM27-objecten: menselijke manager → contract → team → club → financiën, de selectie,
-//! blessures en moraal.
+//! blessures, moraal en de trainingskalender.
 //!
-//! Veldposities voor macOS (Steam-build 26340721, arm64) komen uit de openbare geheugenkaart
-//! van FMLibreEditor (profiles/fm27/layout-macos.toml) en FMSuperScout (docs/macos.md). Elke
-//! keten wordt gecontroleerd (klassenaam, terugwijzende pointers, waarden binnen bereik)
-//! voordat er iets gelezen of geschreven wordt.
+//! Veldposities komen uit de openbare geheugenkaarten van FMLibreEditor (profiles/fm27:
+//! layout.toml voor Windows, layout-macos.toml voor macOS) en FMSuperScout (docs/macos.md).
+//! Clubs, financiën, contracten, teams en blessures liggen op beide platforms hetzelfde; spelers
+//! en staf niet (MSVC en clang leggen klassen met virtuele bases anders uit). Elke keten wordt
+//! gecontroleerd (terugwijzende pointers, waarden binnen bereik) voordat er iets gelezen of
+//! geschreven wordt.
 
 use serde::Serialize;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::mem;
+use crate::mem::{self, Abi};
 use crate::rtti;
 
-// ---- veldposities -----------------------------------------------------------
-const HUMAN_CLASS: &str = "N2db16HUMAN_NON_PLAYERE";
-const HUMAN_SHIFT: u64 = 0x340; // persoon- en identiteitsblok van de menselijke manager
-const STAFF_CONTRACT: u64 = 0x170;
-const STAFF_IDENTITY: u64 = 0x208;
+// ---- veldposities die per platform verschillen ------------------------------------
+
+pub struct Layout {
+    /// staf: contract-pointer en het blok waar een contract naar terugwijst
+    pub staff_contract: u64,
+    pub staff_identity: u64,
+    /// in het object van de menselijke manager liggen die velden zoveel verder
+    pub human_shift: u64,
+    pub p_team: u64,
+    pub p_injuries: u64,
+    pub p_sharpness: u64,
+    pub p_condition: u64,
+    pub p_morale: u64,
+    pub p_first: u64,
+    pub p_last: u64,
+    pub p_common: u64,
+    pub p_contract: u64,
+    pub p_identity: u64,
+    pub p_uid: u64,
+    /// speler-trainers hebben een extra blok: hun persoons- en identiteitsvelden liggen verder
+    pub player_coach_shift: u64,
+}
+
+/// macOS (clang), Steam-build 26340721: gemeten en live getest.
+pub const MAC: Layout = Layout {
+    staff_contract: 0x170,
+    staff_identity: 0x208,
+    human_shift: 0x340,
+    p_team: 0x128,
+    p_injuries: 0xF0,
+    p_sharpness: 0x250,
+    p_condition: 0x254,
+    p_morale: 0x264,
+    p_first: 0x298,
+    p_last: 0x2A0,
+    p_common: 0x2A8,
+    p_contract: 0x2F0,
+    p_identity: 0x388,
+    p_uid: 0x394,
+    player_coach_shift: 0xF8,
+};
+
+/// Windows (MSVC), FMLibreEditor layout.toml (geverifieerd op de Steam- en Game Pass-builds):
+/// de eigen velden van een speler liggen 8 verder (vbptr), het persoonsblok 0x40 verder en het
+/// identiteitsblok, waar contracten naar wijzen, komt vóór de persoon.
+pub const WIN: Layout = Layout {
+    staff_contract: 0x1A8,
+    staff_identity: 0x100,
+    human_shift: 0x340,
+    p_team: 0x130,
+    p_injuries: 0xF8,
+    p_sharpness: 0x258,
+    p_condition: 0x25C,
+    p_morale: 0x26C,
+    p_first: 0x2D8,
+    p_last: 0x2E0,
+    p_common: 0x2E8,
+    p_contract: 0x330,
+    p_identity: 0x288,
+    p_uid: 0x294,
+    player_coach_shift: 0xF8,
+};
+
+pub fn layout() -> &'static Layout {
+    match mem::abi() {
+        Abi::Itanium => &MAC,
+        Abi::Msvc => &WIN,
+    }
+}
+
+// ---- veldposities die op beide platforms gelijk zijn --------------------------------
 
 const CONTRACT_OWNER: u64 = 0x08;
 const CONTRACT_TEAM: u64 = 0x10;
@@ -37,24 +106,46 @@ const FIN_WAGE: u64 = 0x814;
 const FIN_TICKET: u64 = 0x864;
 const FIN_CORPORATE: u64 = 0x8A9;
 
-const P_TEAM: u64 = 0x128;
-const P_INJURIES: u64 = 0xF0;
-const P_SHARPNESS: u64 = 0x250;
-const P_CONDITION: u64 = 0x254;
-const P_MORALE: u64 = 0x264;
-const P_FIRST: u64 = 0x298;
-const P_LAST: u64 = 0x2A0;
-const P_COMMON: u64 = 0x2A8;
-const P_CONTRACT: u64 = 0x2F0;
-const P_IDENTITY: u64 = 0x388;
-const P_UID: u64 = 0x394;
-const PLAYER_COACH_SHIFT: u64 = 0xF8;
-
 const INJ_KIND: u64 = 0x08;
 const INJ_KIND_NAME: u64 = 0x18;
 const ABSENCES: u64 = 0x18; // lijst van afwezigheden (schorsingen) in het blessure-record
 const BAN_MARKER: u64 = 0x16;
-const BAN_MATCHES: u64 = 0x1C;
+
+// ---- builds ---------------------------------------------------------------------------
+
+/// Een FM-build waarvan de vaste adressen bekend zijn.
+pub struct Build {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// alle aanpassingen zijn op deze build live getest
+    pub writes_tested: bool,
+    /// RVA in game_plugin van de spel-datum (u16 dag van het jaar + u16 jaar)
+    pub current_date: u64,
+    /// RVA in game_plugin van het (begin, end)-paar van de staflijst
+    pub staff: u64,
+}
+
+pub const BUILDS: &[Build] = &[
+    // gemeten en live getest (7 nov 2026); RVA's uit FMLibreEditor steam-26340721-macos-arm64.toml
+    Build { id: "F4540355-2186-39CB-9119-C706A6A35346", label: "Steam 26340721 macOS arm64", writes_tested: true, current_date: 0x56B1DB8, staff: 0x56D2E60 },
+    // FMLibreEditor steam-26340721.toml: game_plugin.dll met SizeOfImage 0x1821C000 en linktijd 0x6AE565AF
+    Build { id: "PE-6AE565AF-1821C000", label: "Steam 26340721 Windows", writes_tested: false, current_date: 0x56AF378, staff: 0x5705818 },
+];
+
+/// Aanpassen toestaan op een build die (nog) niet live getest is; de gebruiker zet dit zelf aan.
+static ALLOW_UNTESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_allow_untested(on: bool) {
+    ALLOW_UNTESTED.store(on, Ordering::Release);
+}
+
+pub fn allow_untested() -> bool {
+    ALLOW_UNTESTED.load(Ordering::Acquire)
+}
+
+fn profile(id: Option<&str>) -> Option<&'static Build> {
+    BUILDS.iter().find(|b| Some(b.id) == id)
+}
 
 // ---- toestand ---------------------------------------------------------------
 
@@ -68,7 +159,8 @@ pub struct Patch {
 #[derive(Default)]
 struct State {
     human: Option<u64>,
-    training_block: Option<u64>,
+    /// (adres van de team-pointer in het trainingsblok, afstand tot de weeklijst)
+    training_block: Option<(u64, u64)>,
     human_vtables: Vec<u64>,
     undo: Vec<(String, Vec<Patch>)>,
 }
@@ -80,22 +172,25 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     f(g.get_or_insert_with(State::default))
 }
 
-/// game_plugin-builds waarvoor alle posities gemeten en live getest zijn.
-/// FM27 Steam-build 26340721, Apple silicon (gemeten 7 nov 2026).
-const KNOWN_BUILDS: &[&str] = &["F4540355-2186-39CB-9119-C706A6A35346"];
-
-/// (UUID van game_plugin, of die build bekend is).
+/// (build-id van game_plugin, of aanpassen op deze build live getest is).
 pub fn build() -> (Option<String>, bool) {
-    let uuid = mem::game_plugin().and_then(|i| i.uuid);
-    let known = uuid.as_deref().is_some_and(|u| KNOWN_BUILDS.contains(&u));
-    (uuid, known)
+    let id = mem::game_plugin().and_then(|i| i.id);
+    let tested = profile(id.as_deref()).is_some_and(|b| b.writes_tested);
+    (id, tested)
+}
+
+/// Wordt gebruikt na het opnieuw verbinden met FM (Windows): alles wat onthouden is, is weg.
+pub fn reset() {
+    let mut g = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    *g = None;
 }
 
 fn apply(label: &str, patches: Vec<Patch>) -> Result<usize, String> {
-    if !build().1 {
+    let (id, tested) = build();
+    if !tested && !allow_untested() {
         return Err(format!(
-            "deze FM-versie ({}) is nog niet getest: alleen lezen. Update FM27 Trainer. / This FM build is not verified yet: read-only. Please update FM27 Trainer.",
-            build().0.unwrap_or_else(|| "?".into())
+            "deze FM-versie ({}) is nog niet getest: alleen lezen. Zet in Instellingen 'Aanpassen op niet-geteste FM-versie' aan om het toch te proberen. / This FM build ({0}) is not verified yet: read-only. Turn on 'Allow changes on an untested FM build' in Settings to try anyway.",
+            id.unwrap_or_else(|| "?".into())
         ));
     }
     let mut done: Vec<Patch> = Vec::new();
@@ -136,12 +231,13 @@ pub struct Chain {
 }
 
 fn check_chain(h: u64) -> Option<Chain> {
-    let contract = mem::u64_at(h + STAFF_CONTRACT + HUMAN_SHIFT)?;
+    let l = layout();
+    let contract = mem::u64_at(h + l.staff_contract + l.human_shift)?;
     if !mem::is_ptr(contract) {
         return None;
     }
     // het contract wijst terug naar het identiteitsblok van de manager
-    if mem::u64_at(contract + CONTRACT_OWNER)? != h + STAFF_IDENTITY + HUMAN_SHIFT {
+    if mem::u64_at(contract + CONTRACT_OWNER)? != h + l.staff_identity + l.human_shift {
         return None;
     }
     let team = mem::u64_at(contract + CONTRACT_TEAM)?;
@@ -172,33 +268,58 @@ fn finance_looks_real(f: u64) -> bool {
     tp.is_finite() && (1.0..=1000.0).contains(&tp) && (1..=20).contains(&corp) && tb >= -1 && wb >= 0 && twb >= 0
 }
 
-/// Vindt (en onthoudt) de menselijke manager; zoekt de heap af als het nog niet bekend is.
-pub fn chain() -> Result<Chain, String> {
-    if let Some(h) = with_state(|s| s.human) {
-        if let Some(c) = check_chain(h) {
-            return Ok(c);
-        }
-    }
-    let img = mem::game_plugin().ok_or("game_plugin niet geladen")?;
+/// Zoekt de manager via de vtables van db::HUMAN_NON_PLAYER (RTTI).
+fn human_via_rtti(img: &mem::Image) -> Option<Chain> {
     let vts = with_state(|s| s.human_vtables.clone());
     let vts = if vts.is_empty() {
-        let v = rtti::vtables_of(&img, HUMAN_CLASS);
+        let v = rtti::vtables_of(img, &rtti::decorated("db", "HUMAN_NON_PLAYER"));
         with_state(|s| s.human_vtables = v.clone());
         v
     } else {
         vts
     };
     if vts.is_empty() {
-        return Err("klasse db::HUMAN_NON_PLAYER niet gevonden (andere FM-versie?)".into());
+        return None;
     }
-    let objs = rtti::instances(&vts, 64);
-    for h in objs {
+    rtti::instances(&vts, 64).into_iter().find_map(check_chain)
+}
+
+/// Zoekt de manager in de staflijst van het spel (vaste plek per build).
+fn human_via_staff(img: &mem::Image) -> Option<Chain> {
+    let b = profile(img.id.as_deref())?;
+    let pair = img.start + b.staff;
+    let (begin, end) = (mem::u64_at(pair)?, mem::u64_at(pair + 8)?);
+    if !mem::is_ptr(begin) || end < begin || (end - begin) % 8 != 0 || (end - begin) / 8 > 400_000 {
+        return None;
+    }
+    let bytes = mem::read_bytes(begin, (end - begin) as usize)?;
+    bytes
+        .chunks_exact(8)
+        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .filter(|p| mem::is_ptr(*p)) // lege plekken overslaan
+        .find_map(check_chain)
+}
+
+/// Vindt (en onthoudt) de menselijke manager.
+pub fn chain() -> Result<Chain, String> {
+    if let Some(h) = with_state(|s| s.human) {
         if let Some(c) = check_chain(h) {
-            with_state(|s| s.human = Some(h));
             return Ok(c);
         }
     }
-    Err("geen menselijke manager met club gevonden. Is er een save geladen?".into())
+    let img = mem::game_plugin().ok_or("game_plugin niet geladen (laadt FM nog?) / game_plugin not loaded yet")?;
+    // op Windows eerst de staflijst (geen RTTI nodig), op de Mac eerst de geteste RTTI-weg
+    let found = match mem::abi() {
+        Abi::Msvc => human_via_staff(&img).or_else(|| human_via_rtti(&img)),
+        Abi::Itanium => human_via_rtti(&img).or_else(|| human_via_staff(&img)),
+    };
+    match found {
+        Some(c) => {
+            with_state(|s| s.human = Some(c.human));
+            Ok(c)
+        }
+        None => Err("geen menselijke manager met club gevonden. Is er een save geladen? / No human manager with a club found. Is a save loaded?".into()),
+    }
 }
 
 #[derive(Serialize)]
@@ -289,30 +410,49 @@ fn name_entry(entry: u64) -> Option<String> {
     mem::fm_string(mem::u64_at(entry)?)
 }
 
+/// Het contract van een speler, als het terugwijst naar zijn identiteitsblok.
+fn player_contract(p: u64, shift: u64) -> Option<u64> {
+    let l = layout();
+    let ct = mem::u64_at(p + l.p_contract + shift).filter(|c| mem::is_ptr(*c))?;
+    (mem::u64_at(ct + CONTRACT_OWNER)? == p + l.p_identity + shift).then_some(ct)
+}
+
+/// Gewone speler (0) of speler-trainer (extra blok): het contract dat terugwijst beslist,
+/// anders de klassenaam.
+fn player_shift(p: u64, class: Option<&str>) -> u64 {
+    let coach = layout().player_coach_shift;
+    if player_contract(p, 0).is_some() {
+        return 0;
+    }
+    if player_contract(p, coach).is_some() {
+        return coach;
+    }
+    if class.is_some_and(|c| c.contains("PLAYER_AND_NON_PLAYER")) { coach } else { 0 }
+}
+
 fn read_player(p: u64, team: u64) -> Option<PlayerInfo> {
-    if mem::u64_at(p + P_TEAM)? != team {
+    let l = layout();
+    if mem::u64_at(p + l.p_team)? != team {
         return None;
     }
-    let class = rtti::class_name(p)?;
-    if !class.contains("PLAYER") {
+    let class = rtti::class_name(p);
+    if class.as_deref().is_some_and(|c| !c.contains("PLAYER")) {
         return None;
     }
-    let shift = if class.contains("PLAYER_AND_NON_PLAYER") { PLAYER_COACH_SHIFT } else { 0 };
-    let uid = mem::u32_at(p + P_UID + shift)?;
-    let common = mem::u64_at(p + P_COMMON + shift).and_then(name_entry);
-    let first = mem::u64_at(p + P_FIRST + shift).and_then(name_entry);
-    let last = mem::u64_at(p + P_LAST + shift).and_then(name_entry);
+    let shift = player_shift(p, class.as_deref());
+    let uid = mem::u32_at(p + l.p_uid + shift)?;
+    let common = mem::u64_at(p + l.p_common + shift).and_then(name_entry);
+    let first = mem::u64_at(p + l.p_first + shift).and_then(name_entry);
+    let last = mem::u64_at(p + l.p_last + shift).and_then(name_entry);
     let name = common.unwrap_or_else(|| match (first, last) {
         (Some(f), Some(l)) => format!("{f} {l}"),
         (f, l) => f.or(l).unwrap_or_else(|| format!("UID {uid}")),
     });
-    let morale = mem::u8_at(p + P_MORALE)?;
+    let morale = mem::u8_at(p + l.p_morale)?;
     let (mut happiness, mut unhappy) = (None, false);
-    if let Some(ct) = mem::u64_at(p + P_CONTRACT + shift).filter(|c| mem::is_ptr(*c)) {
-        if mem::u64_at(ct + CONTRACT_OWNER) == Some(p + P_IDENTITY + shift) {
-            happiness = mem::i16_at(ct + CONTRACT_HAPPINESS);
-            unhappy = mem::u64_at(ct + CONTRACT_UNHAPPINESS).is_some_and(|x| x != 0);
-        }
+    if let Some(ct) = player_contract(p, shift) {
+        happiness = mem::i16_at(ct + CONTRACT_HAPPINESS);
+        unhappy = mem::u64_at(ct + CONTRACT_UNHAPPINESS).is_some_and(|x| x != 0);
     }
     let mut injuries = Vec::new();
     let mut bans = 0;
@@ -332,8 +472,8 @@ fn read_player(p: u64, team: u64) -> Option<PlayerInfo> {
         uid,
         name,
         morale,
-        condition: mem::u16_at(p + P_CONDITION).unwrap_or(0),
-        sharpness: mem::u16_at(p + P_SHARPNESS).unwrap_or(0),
+        condition: mem::u16_at(p + l.p_condition).unwrap_or(0),
+        sharpness: mem::u16_at(p + l.p_sharpness).unwrap_or(0),
         happiness,
         unhappy_reasons: unhappy,
         injuries,
@@ -359,20 +499,16 @@ fn pointer_list(header: u64, max: usize) -> Option<(u64, Vec<u64>)> {
     v.iter().all(|x| mem::is_ptr(*x)).then_some((header, v))
 }
 
+fn injury_record(p: u64) -> Option<u64> {
+    mem::u64_at(p + layout().p_injuries).filter(|r| mem::is_ptr(*r))
+}
+
 fn injury_list(p: u64) -> Option<(u64, Vec<u64>)> {
-    let rec = mem::u64_at(p + P_INJURIES)?;
-    if !mem::is_ptr(rec) {
-        return None;
-    }
-    pointer_list(rec, 16)
+    pointer_list(injury_record(p)?, 16)
 }
 
 fn absence_list(p: u64) -> Option<(u64, Vec<u64>)> {
-    let rec = mem::u64_at(p + P_INJURIES)?;
-    if !mem::is_ptr(rec) {
-        return None;
-    }
-    pointer_list(rec + ABSENCES, 32)
+    pointer_list(injury_record(p)? + ABSENCES, 32)
 }
 
 pub fn squad() -> Result<Vec<PlayerInfo>, String> {
@@ -431,7 +567,6 @@ pub fn lift_bans(uids: &Option<Vec<u32>>) -> Result<usize, String> {
         let new_end = begin + 8 * kept.len() as u64;
         patches.push(Patch { addr: hdr + 8, old: end.to_le_bytes().to_vec(), new: new_end.to_le_bytes().to_vec() });
     }
-    let _ = BAN_MATCHES;
     if !patches.is_empty() {
         apply("schorsingen opgeheven", patches)?;
     }
@@ -440,31 +575,26 @@ pub fn lift_bans(uids: &Option<Vec<u32>>) -> Result<usize, String> {
 
 /// Moraal naar 20 (top) en de redenen om ontevreden te zijn weg, zoals FMRTE's "Inspire".
 pub fn inspire(uids: &Option<Vec<u32>>, morale: u8, clear_unhappiness: bool) -> Result<usize, String> {
+    let l = layout();
     let morale = morale.clamp(1, 20);
     let mut patches = Vec::new();
     let mut n = 0;
     for p in select(uids)? {
         let mut touched = false;
-        let cur = mem::u8_at(p.addr + P_MORALE).ok_or("moraal niet leesbaar")?;
+        let cur = mem::u8_at(p.addr + l.p_morale).ok_or("moraal niet leesbaar")?;
         if !(1..=20).contains(&cur) {
             continue; // past niet bij wat we verwachten: niet aankomen
         }
         if cur != morale {
-            patches.push(Patch { addr: p.addr + P_MORALE, old: vec![cur], new: vec![morale] });
+            patches.push(Patch { addr: p.addr + l.p_morale, old: vec![cur], new: vec![morale] });
             touched = true;
         }
         if clear_unhappiness {
-            if let Some(ct) = mem::u64_at(p.addr + P_CONTRACT + p.shift).filter(|c| mem::is_ptr(*c)) {
-                if mem::u64_at(ct + CONTRACT_OWNER) == Some(p.addr + P_IDENTITY + p.shift) {
-                    let reasons = mem::u64_at(ct + CONTRACT_UNHAPPINESS).unwrap_or(0);
-                    if reasons != 0 {
-                        patches.push(Patch {
-                            addr: ct + CONTRACT_UNHAPPINESS,
-                            old: reasons.to_le_bytes().to_vec(),
-                            new: 0u64.to_le_bytes().to_vec(),
-                        });
-                        touched = true;
-                    }
+            if let Some(ct) = player_contract(p.addr, p.shift) {
+                let reasons = mem::u64_at(ct + CONTRACT_UNHAPPINESS).unwrap_or(0);
+                if reasons != 0 {
+                    patches.push(Patch { addr: ct + CONTRACT_UNHAPPINESS, old: reasons.to_le_bytes().to_vec(), new: 0u64.to_le_bytes().to_vec() });
+                    touched = true;
                 }
             }
         }
@@ -482,9 +612,12 @@ pub fn inspire(uids: &Option<Vec<u32>>, morale: u8, clear_unhappiness: bool) -> 
 //
 // TRAINING_MANAGER houdt per team een blok bij waarin de team-pointer staat en, 0x28 verder,
 // een lijst (begin, end, cap) met pointers naar weekrecords van 0x60 bytes:
+//   +0x00 pointer naar de naam van het schema (FM-string)
 //   +0x0C u16 dag-van-het-jaar (lage 9 bits) + u16 jaar  (maandag van de week)
 //   +0x10 7 dagblokken van 8 bytes: u16 0, u16 sessie 1, u16 sessie 2, u16 extra
-// Gemeten op FM27 (Steam-build 26340721, arm64) en gecontroleerd tegen de kalender in de save.
+// Gemeten op FM27 macOS (Steam-build 26340721) en gecontroleerd tegen de kalender in de save.
+// Op Windows is de afstand nog niet gemeten: de app zoekt hem (eerst 0x28) en controleert
+// de weeklijst streng (geldige datums, precies een week uit elkaar, geldige sessiecodes).
 
 const TB_WEEKS: u64 = 0x28;
 const WEEK_DATE: u64 = 0x0C;
@@ -520,10 +653,26 @@ impl FmDate {
     }
 }
 
+/// De spel-datum zoals het team hem bijhoudt (gemeten op de Mac).
+fn date_via_team(team: u64) -> Option<FmDate> {
+    let s = mem::u64_at(team + TEAM_SCHEDULE).filter(|p| mem::is_ptr(*p))?;
+    FmDate::read(s + SCHEDULE_DATE)
+}
+
+/// De spel-datum op zijn vaste plek in game_plugin (per build, FMLibreEditor).
+fn date_via_static() -> Option<FmDate> {
+    let img = mem::game_plugin()?;
+    let b = profile(img.id.as_deref())?;
+    FmDate::read(img.start + b.current_date).filter(|d| d.year >= 2000)
+}
+
 pub fn game_date() -> Result<FmDate, String> {
     let c = chain()?;
-    let s = mem::u64_at(c.team + TEAM_SCHEDULE).filter(|p| mem::is_ptr(*p)).ok_or("schema van het team niet gevonden")?;
-    FmDate::read(s + SCHEDULE_DATE).ok_or_else(|| "spel-datum niet leesbaar".into())
+    let d = match mem::abi() {
+        Abi::Msvc => date_via_static().or_else(|| date_via_team(c.team)),
+        Abi::Itanium => date_via_team(c.team).or_else(date_via_static),
+    };
+    d.ok_or_else(|| "spel-datum niet leesbaar / game date not readable".into())
 }
 
 fn week_ok(rec: u64) -> bool {
@@ -545,21 +694,47 @@ fn weeks_header_ok(hdr: u64) -> Option<Vec<u64>> {
     Some(list)
 }
 
-/// Het trainingsblok van het team van de manager (adres van de team-pointer erin).
-fn training_block(team: u64) -> Result<u64, String> {
-    if let Some(b) = with_state(|s| s.training_block) {
-        if mem::u64_at(b) == Some(team) && weeks_header_ok(b + TB_WEEKS).is_some() {
-            return Ok(b);
+/// Strenger, voor een afstand die nog niet gemeten is: elke week geldig, met oplopende maandagen.
+fn weeks_header_strict(hdr: u64) -> Option<Vec<u64>> {
+    let list = weeks_header_ok(hdr)?;
+    if list.len() < 2 || !list.iter().all(|r| week_ok(*r)) {
+        return None;
+    }
+    let dates: Vec<FmDate> = list.iter().filter_map(|r| FmDate::read(r + WEEK_DATE)).collect();
+    (dates.len() == list.len() && dates.windows(2).all(|w| w[0] < w[1])).then_some(list)
+}
+
+fn weeks_at(hdr: u64, delta: u64) -> Option<Vec<u64>> {
+    if delta == TB_WEEKS { weeks_header_ok(hdr) } else { weeks_header_strict(hdr) }
+}
+
+/// Afstanden van de team-pointer tot de weeklijst die geprobeerd worden: eerst de gemeten 0x28.
+fn tb_candidates() -> Vec<u64> {
+    let mut v = vec![TB_WEEKS];
+    if mem::abi() == Abi::Msvc {
+        v.extend((0x08..=0x80).step_by(8).filter(|d| *d != TB_WEEKS));
+    }
+    v
+}
+
+/// De weeklijst van het team van de manager (adres van de lijstkop).
+fn training_weeks_header(team: u64) -> Result<u64, String> {
+    if let Some((b, d)) = with_state(|s| s.training_block) {
+        if mem::u64_at(b) == Some(team) && weeks_at(b + d, d).is_some() {
+            return Ok(b + d);
         }
     }
     let set: std::collections::HashSet<u64> = [team].into_iter().collect();
-    for (a, _) in mem::scan_u64(&set, 20_000) {
-        if weeks_header_ok(a + TB_WEEKS).is_some() {
-            with_state(|s| s.training_block = Some(a));
-            return Ok(a);
+    let hits = mem::scan_u64(&set, 20_000);
+    for d in tb_candidates() {
+        for (a, _) in &hits {
+            if weeks_at(a + d, d).is_some() {
+                with_state(|s| s.training_block = Some((*a, d)));
+                return Ok(a + d);
+            }
         }
     }
-    Err("trainingskalender van het team niet gevonden".into())
+    Err("trainingskalender van het team niet gevonden / training calendar not found".into())
 }
 
 #[derive(Serialize)]
@@ -584,8 +759,8 @@ fn read_week(rec: u64) -> Option<Week> {
 
 pub fn training_weeks() -> Result<(FmDate, Vec<Week>), String> {
     let c = chain()?;
-    let block = training_block(c.team)?;
-    let list = weeks_header_ok(block + TB_WEEKS).ok_or("weeklijst niet leesbaar")?;
+    let hdr = training_weeks_header(c.team)?;
+    let list = weeks_header_ok(hdr).ok_or("weeklijst niet leesbaar")?;
     let today = game_date()?;
     Ok((today, list.into_iter().filter_map(read_week).collect()))
 }
@@ -597,8 +772,8 @@ pub fn set_week(start: FmDate, days: &[[u16; 3]]) -> Result<usize, String> {
         return Err("een week heeft 7 dagen".into());
     }
     let c = chain()?;
-    let block = training_block(c.team)?;
-    let list = weeks_header_ok(block + TB_WEEKS).ok_or("weeklijst niet leesbaar")?;
+    let hdr = training_weeks_header(c.team)?;
+    let list = weeks_header_ok(hdr).ok_or("weeklijst niet leesbaar")?;
     let today = game_date()?;
     let rec = list
         .into_iter()

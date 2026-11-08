@@ -1,6 +1,9 @@
-//! Verbinding met de module in FM27 en het starten van FM27 met die module.
+//! Verbinding met FM27. macOS: met de module die in FM meedraait (via een socket), en FM starten
+//! met die module. Windows: de app leest fm.exe zelf, met dezelfde code (crate fm27-agent).
 
-use anyhow::{Result, bail};
+use anyhow::Result;
+#[cfg(not(windows))]
+use anyhow::bail;
 #[cfg(target_os = "macos")]
 use anyhow::{Context, anyhow};
 use serde_json::{Value, json};
@@ -15,8 +18,8 @@ use std::process::{Command, Stdio};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
-/// Of live-functies (module in FM) op dit platform beschikbaar zijn.
-pub const LIVE_SUPPORTED: bool = cfg!(target_os = "macos");
+/// Of live-functies (lezen en schrijven in FM) op dit platform beschikbaar zijn.
+pub const LIVE_SUPPORTED: bool = cfg!(any(target_os = "macos", windows));
 
 const STEAM_APP_ID: &str = "4530370";
 
@@ -25,9 +28,32 @@ fn socket_path() -> PathBuf {
     crate::data_dir().join("agent.sock")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn request(_req: Value) -> Result<Value> {
-    bail!("{}", crate::t!("Live-functies zijn nog alleen beschikbaar op macOS.", "Live features are currently macOS only."))
+    bail!("{}", crate::t!("Live-functies zijn niet beschikbaar op dit systeem.", "Live features are not available on this system."))
+}
+
+/// Voert één opdracht uit tegen fm.exe.
+#[cfg(windows)]
+pub fn request(req: Value) -> Result<Value> {
+    fm27_agent::request(&req).map_err(|e| anyhow::anyhow!(e))
+}
+
+/// Of er iets is om mee te verbinden: de socket van de module (macOS) of een draaiende fm.exe.
+pub fn module_ready() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // na het afsluiten van FM blijft het socketbestand achter: dan niet verbinden
+        socket_path().exists() && fm_running()
+    }
+    #[cfg(windows)]
+    {
+        fm27_agent::fm_pid().is_some()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        false
+    }
 }
 
 /// Stuurt één opdracht naar de module en geeft `data` terug.
@@ -54,19 +80,20 @@ pub fn ping() -> bool {
     request(json!({"cmd": "ping"})).is_ok()
 }
 
+#[cfg(not(windows))]
 fn pgrep(name: &str) -> bool {
     Command::new("pgrep").args(["-x", name]).stdout(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
 }
 
 pub fn fm_running() -> bool {
-    if cfg!(windows) {
-        return Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq fm.exe", "/NH"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("fm.exe"))
-            .unwrap_or(false);
+    #[cfg(windows)]
+    {
+        fm27_agent::fm_pid().is_some()
     }
-    pgrep("Football Manager 27")
+    #[cfg(not(windows))]
+    {
+        pgrep("Football Manager 27")
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -101,9 +128,31 @@ fn agent_source() -> Option<PathBuf> {
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn start_fm() -> Result<String> {
-    bail!("{}", crate::t!("Live-functies zijn nog alleen beschikbaar op macOS.", "Live features are currently macOS only."))
+    bail!("{}", crate::t!("Live-functies zijn niet beschikbaar op dit systeem.", "Live features are not available on this system."))
+}
+
+/// Windows: FM27 gewoon via Steam starten; de app leest het proces van buitenaf.
+#[cfg(windows)]
+pub fn start_fm() -> Result<String> {
+    use std::os::windows::process::CommandExt;
+    if fm_running() {
+        return Ok(crate::t!("FM27 draait al. Laad je save; de app verbindt vanzelf.", "FM27 is already running. Load your save; the app connects automatically.").into());
+    }
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    Command::new("cmd")
+        .args(["/C", "start", "", &format!("steam://rungameid/{STEAM_APP_ID}")])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(crate::t!(
+        "FM27 wordt gestart via Steam. Laad je save; de app verbindt vanzelf.",
+        "FM27 is starting through Steam. Load your save; the app connects automatically."
+    )
+    .into())
 }
 
 /// Start FM27 met de module. FM mag nog niet draaien; Steam moet open en ingelogd zijn.

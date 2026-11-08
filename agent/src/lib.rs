@@ -1,93 +1,126 @@
-//! FM27 Trainer-module. Wordt door de app met FM27 meegestart (DYLD_INSERT_LIBRARIES; FM27
-//! staat dat toe via zijn entitlements, zie FMSuperScout docs/macos.md) en luistert op een
-//! lokale socket. Doet niets uit zichzelf: alleen wat de app vraagt, en schrijft alleen na
-//! controle van wat er nu in het geheugen staat (met undo).
-#![cfg(target_os = "macos")]
+//! FM27 Trainer-module: leest en schrijft (op verzoek) in het geheugen van FM27. Doet niets uit
+//! zichzelf en schrijft alleen na controle van wat er nu in het geheugen staat (met undo).
+//!
+//! - macOS: de app start FM27 met deze bibliotheek (DYLD_INSERT_LIBRARIES; FM27 staat dat toe
+//!   via zijn entitlements, zie FMSuperScout docs/macos.md). Ze luistert op een lokale socket.
+//! - Windows: de app gebruikt dezelfde code rechtstreeks (`request`) en leest fm.exe van buitenaf.
+#![cfg(any(target_os = "macos", windows))]
 
-mod game;
+pub mod game;
 mod mem;
 mod rtti;
+#[cfg(test)]
+mod tests;
 
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
-use std::time::Duration;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn data_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join("Library/Application Support/FM27 Trainer")
-}
+// ---- macOS: module in FM, socket naar de app ---------------------------------------------
 
-fn log(msg: &str) {
-    let p = data_dir().join("agent.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let _ = writeln!(f, "{t} {msg}");
+#[cfg(all(target_os = "macos", not(test)))]
+mod server {
+    use serde_json::{Value, json};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn data_dir() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        PathBuf::from(home).join("Library/Application Support/FM27 Trainer")
     }
-}
 
-#[used]
-#[unsafe(link_section = "__DATA,__mod_init_func")]
-static INIT: extern "C" fn() = init;
-
-extern "C" fn init() {
-    let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    // alleen in FM zelf, niet in hulpprocessen die de variabele erven
-    if !exe.contains(".app/Contents/MacOS/Football Manager 2") {
-        return;
+    fn log(msg: &str) {
+        let p = data_dir().join("agent.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let _ = writeln!(f, "{t} {msg}");
+        }
     }
-    unsafe { std::env::remove_var("DYLD_INSERT_LIBRARIES") };
-    let _ = std::fs::create_dir_all(data_dir());
-    log(&format!("geladen in {exe} (pid {})", std::process::id()));
-    let _ = std::thread::Builder::new().name("fm27-trainer".into()).stack_size(8 << 20).spawn(|| {
-        // wachten tot FM zelf is opgestart
-        std::thread::sleep(Duration::from_secs(8));
-        serve();
-    });
-}
 
-fn serve() {
-    let sock = data_dir().join("agent.sock");
-    let _ = std::fs::remove_file(&sock);
-    let listener = match UnixListener::bind(&sock) {
-        Ok(l) => l,
-        Err(e) => {
-            log(&format!("socket mislukt: {e}"));
+    #[used]
+    #[unsafe(link_section = "__DATA,__mod_init_func")]
+    static INIT: extern "C" fn() = init;
+
+    extern "C" fn init() {
+        let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        // alleen in FM zelf, niet in hulpprocessen die de variabele erven
+        if !exe.contains(".app/Contents/MacOS/Football Manager 2") {
             return;
         }
-    };
-    log("luistert");
-    for stream in listener.incoming().flatten() {
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-        handle(stream);
+        unsafe { std::env::remove_var("DYLD_INSERT_LIBRARIES") };
+        let _ = std::fs::create_dir_all(data_dir());
+        log(&format!("geladen in {exe} (pid {})", std::process::id()));
+        let _ = std::thread::Builder::new().name("fm27-trainer".into()).stack_size(8 << 20).spawn(|| {
+            // wachten tot FM zelf is opgestart
+            std::thread::sleep(Duration::from_secs(8));
+            serve();
+        });
+    }
+
+    fn serve() {
+        let sock = data_dir().join("agent.sock");
+        let _ = std::fs::remove_file(&sock);
+        let listener = match UnixListener::bind(&sock) {
+            Ok(l) => l,
+            Err(e) => {
+                log(&format!("socket mislukt: {e}"));
+                return;
+            }
+        };
+        log("luistert");
+        for stream in listener.incoming().flatten() {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+            handle(stream);
+        }
+    }
+
+    fn handle(stream: UnixStream) {
+        let mut reader = BufReader::new(match stream.try_clone() {
+            Ok(s) => s,
+            Err(_) => return,
+        });
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() {
+            return;
+        }
+        let reply = match serde_json::from_str::<Value>(&line) {
+            Ok(req) => match super::guarded(&req) {
+                Ok(v) => json!({"ok": true, "data": v}),
+                Err(e) => json!({"ok": false, "error": e}),
+            },
+            Err(e) => json!({"ok": false, "error": format!("ongeldig verzoek: {e}")}),
+        };
+        let mut s = stream;
+        let _ = writeln!(s, "{reply}");
     }
 }
 
-fn handle(stream: UnixStream) {
-    let mut reader = BufReader::new(match stream.try_clone() {
-        Ok(s) => s,
-        Err(_) => return,
-    });
-    let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
-        return;
+// ---- Windows: de app roept dit rechtstreeks aan ------------------------------------------
+
+/// pid van fm.exe als FM27 draait.
+#[cfg(windows)]
+pub fn fm_pid() -> Option<u32> {
+    mem::find_fm()
+}
+
+/// Voert één opdracht uit tegen fm.exe (verbindt eerst, of opnieuw na een herstart van FM).
+/// Opdrachten lopen na elkaar, zoals op de Mac via de socket.
+#[cfg(windows)]
+pub fn request(req: &Value) -> Result<Value, String> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_, fresh) = mem::attach()?;
+    if fresh {
+        game::reset();
     }
-    let reply = match serde_json::from_str::<Value>(&line) {
-        Ok(req) => {
-            let r = std::panic::catch_unwind(|| dispatch(&req));
-            match r {
-                Ok(Ok(v)) => json!({"ok": true, "data": v}),
-                Ok(Err(e)) => json!({"ok": false, "error": e}),
-                Err(_) => json!({"ok": false, "error": "interne fout in de module"}),
-            }
-        }
-        Err(e) => json!({"ok": false, "error": format!("ongeldig verzoek: {e}")}),
-    };
-    let mut s = stream;
-    let _ = writeln!(s, "{reply}");
+    guarded(req)
+}
+
+/// `dispatch`, maar een paniek wordt een foutmelding in plaats van een crash.
+fn guarded(req: &Value) -> Result<Value, String> {
+    std::panic::catch_unwind(|| dispatch(req)).unwrap_or_else(|_| Err("interne fout in de module".into()))
 }
 
 fn uids(req: &Value) -> Option<Vec<u32>> {
@@ -114,12 +147,24 @@ fn addr(req: &Value, key: &str) -> Result<u64, String> {
     u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|e| e.to_string())
 }
 
-fn dispatch(req: &Value) -> Result<Value, String> {
+pub fn dispatch(req: &Value) -> Result<Value, String> {
     let cmd = req.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
     match cmd {
         "ping" => {
-            let (uuid, known) = game::build();
-            Ok(json!({"pid": std::process::id(), "version": VERSION, "build": uuid, "known_build": known}))
+            let (id, tested) = game::build();
+            Ok(json!({
+                "pid": mem::pid(),
+                "version": VERSION,
+                "build": id,
+                "known_build": tested,
+                "platform": if mem::abi() == mem::Abi::Msvc { "windows" } else { "macos" },
+                "untested_writes": game::allow_untested(),
+            }))
+        }
+        "allow_untested" => {
+            let on = req.get("on").and_then(|v| v.as_bool()).unwrap_or(false);
+            game::set_allow_untested(on);
+            Ok(json!({"untested_writes": on}))
         }
         "club" => game::club().map(|c| json!(c)),
         "set_finances" => {

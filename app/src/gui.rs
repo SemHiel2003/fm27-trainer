@@ -48,12 +48,15 @@ struct Settings {
     capture_delay: bool,
     #[serde(default = "yes")]
     auto_training: bool,
+    /// Aanpassen in FM toestaan op een build die nog niet live getest is.
+    #[serde(default)]
+    allow_untested: bool,
     planner: PlannerSettings,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, planner: PlannerSettings::default() }
+        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: false, planner: PlannerSettings::default() }
     }
 }
 
@@ -346,29 +349,43 @@ impl App {
     fn connect_card(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         theme::card(ui, |ui| {
             if !agent::LIVE_SUPPORTED {
-                ui.label(theme::h2(t!("Live in FM is nog alleen beschikbaar op macOS", "Live in FM is currently macOS only")));
-                ui.label(theme::dim(t!(
-                    "Uitlezen, planning en export werken ook op Windows. De module die rechtstreeks in FM schrijft, volgt voor Windows.",
-                    "Reading, planning and export also work on Windows. The module that writes straight into FM is coming to Windows."
-                )));
+                ui.label(theme::h2(t!("Live in FM is niet beschikbaar op dit systeem", "Live in FM is not available on this system")));
+                ui.label(theme::dim(t!("Uitlezen, planning en export werken wel.", "Reading, planning and export do work.")));
                 return;
             }
+            let windows = cfg!(windows);
             ui.horizontal(|ui| {
                 ui.label(theme::ic(icon::PLUGS_CONNECTED).size(28.0).color(theme::ACCENT));
                 ui.vertical(|ui| {
                     ui.label(theme::h2(t!("Verbind met Football Manager", "Connect to Football Manager")));
-                    ui.label(theme::dim(t!(
-                        "De app praat rechtstreeks met FM27 via een kleine module die met FM meestart.",
-                        "The app talks to FM27 directly through a small module that starts with FM."
-                    )));
+                    ui.label(theme::dim(if windows {
+                        t!(
+                            "De app leest FM27 rechtstreeks terwijl het draait. Je hoeft niets te installeren.",
+                            "The app reads FM27 directly while it runs. Nothing to install."
+                        )
+                    } else {
+                        t!(
+                            "De app praat rechtstreeks met FM27 via een kleine module die met FM meestart.",
+                            "The app talks to FM27 directly through a small module that starts with FM."
+                        )
+                    }));
                 });
             });
             ui.add_space(10.0);
-            for (n, s) in [
-                (1, t!("Sla je spel op en sluit FM27.", "Save your game and quit FM27.")),
-                (2, t!("Klik op 'Start FM met module' (Steam moet open zijn).", "Click 'Start FM with module' (Steam must be open).")),
-                (3, t!("Laad je save. De app verbindt vanzelf.", "Load your save. The app connects automatically.")),
-            ] {
+            let steps = if windows {
+                [
+                    (1, t!("Start FM27 (via Steam of met de knop hieronder).", "Start FM27 (through Steam or with the button below).")),
+                    (2, t!("Laad je save.", "Load your save.")),
+                    (3, t!("De app verbindt vanzelf.", "The app connects automatically.")),
+                ]
+            } else {
+                [
+                    (1, t!("Sla je spel op en sluit FM27.", "Save your game and quit FM27.")),
+                    (2, t!("Klik op 'Start FM met module' (Steam moet open zijn).", "Click 'Start FM with module' (Steam must be open).")),
+                    (3, t!("Laad je save. De app verbindt vanzelf.", "Load your save. The app connects automatically.")),
+                ]
+            };
+            for (n, s) in steps {
                 ui.horizontal(|ui| {
                     Frame::new().fill(theme::ACCENT_SOFT).corner_radius(CornerRadius::same(20)).inner_margin(Margin::symmetric(8, 2)).show(ui, |ui| {
                         ui.label(RichText::new(n.to_string()).color(theme::ACCENT).strong());
@@ -378,7 +395,8 @@ impl App {
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if theme::primary_button(ui, icon::PLAY, t!("Start FM met module", "Start FM with module"), !self.live.busy()).clicked() {
+                let start = if windows { t!("Start FM27", "Start FM27") } else { t!("Start FM met module", "Start FM with module") };
+                if theme::primary_button(ui, icon::PLAY, start, !self.live.busy()).clicked() {
                     self.live.start_fm(ctx);
                 }
                 if theme::button(ui, icon::ARROW_COUNTER_CLOCKWISE, t!("Opnieuw verbinden", "Reconnect"), !self.live.busy()).clicked() {
@@ -1099,6 +1117,44 @@ impl App {
             });
         });
         ui.add_space(14.0);
+        if agent::LIVE_SUPPORTED {
+            theme::card(ui, |ui| {
+                ui.label(theme::h2(t!("Live in FM", "Live in FM")));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let mut on = self.settings.allow_untested;
+                    if theme::toggle(ui, &mut on).changed() {
+                        self.settings.allow_untested = on;
+                        self.live.allow_untested = on;
+                        dirty = true;
+                        if self.live.connected {
+                            self.live.refresh(ui.ctx(), "", None);
+                        }
+                    }
+                    ui.label(RichText::new(t!("Aanpassen op een niet-geteste FM-versie", "Allow changes on an untested FM build")).strong());
+                });
+                ui.add(egui::Label::new(theme::dim(t!(
+                    "FM27 Trainer past alleen iets aan op FM-versies waarop het live getest is. Op andere versies (de Windows-versie, of na een FM-update) staat de app op alleen lezen. Kloppen club, budget en selectie in de app met wat FM laat zien? Dan kun je aanpassen hier toestaan. Elke wijziging wordt eerst gecontroleerd, kan ongedaan worden gemaakt en blijft pas bewaard als je in FM opslaat. Maak eerst een backup van je save.",
+                    "FM27 Trainer only changes things on FM builds it has been tested on live. On other builds (the Windows version, or after an FM update) the app is read-only. Do club, budget and squad in the app match what FM shows? Then you can allow changes here. Every change is checked first, can be undone and only sticks once you save in FM. Back up your save first."
+                )))
+                .wrap());
+                if self.live.connected {
+                    ui.add_space(4.0);
+                    let (c, txt) = if !self.live.untested_build {
+                        (theme::SUCCESS, t!("Deze FM-versie is getest.", "This FM build is tested."))
+                    } else if self.settings.allow_untested {
+                        (theme::WARNING, t!("Niet-geteste FM-versie: aanpassen toegestaan.", "Untested FM build: changes allowed."))
+                    } else {
+                        (theme::WARNING, t!("Niet-geteste FM-versie: alleen lezen.", "Untested FM build: read-only."))
+                    };
+                    ui.horizontal(|ui| {
+                        theme::status_dot(ui, c);
+                        ui.label(RichText::new(txt).color(theme::TEXT));
+                    });
+                }
+            });
+            ui.add_space(14.0);
+        }
         theme::card(ui, |ui| {
             ui.label(theme::h2(t!("Mappen en toestemming", "Folders and permissions")));
             ui.add_space(6.0);
@@ -1136,6 +1192,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.snapshot(ctx);
         self.poll_analysis();
+        self.live.allow_untested = self.settings.allow_untested;
         self.live.tick(ctx, &self.eff, &self.settings.planner, self.settings.auto_training);
         self.sidebar(ctx);
         egui::CentralPanel::default()

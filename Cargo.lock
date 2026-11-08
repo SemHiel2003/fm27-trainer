@@ -971,6 +971,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -981,6 +982,7 @@ dependencies = [
  "chrono",
  "eframe",
  "egui-phosphor",
+ "fm27-agent",
  "image",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",

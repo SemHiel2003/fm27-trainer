@@ -4,13 +4,24 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/SemHiel2003/fm27-trainer"
-description = "Module die met FM27 meelaadt: leest en schrijft (op verzoek) clubbudget, blessures, moraal en training"
+description = "Leest en schrijft (op verzoek) clubbudget, blessures, moraal en training in FM27: op macOS als module in FM, op Windows van buitenaf"
 
 [lib]
 name = "fm27_agent"
-crate-type = ["cdylib"]
+# cdylib: de module die op macOS met FM meelaadt; rlib: de app gebruikt dezelfde code op Windows
+crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
