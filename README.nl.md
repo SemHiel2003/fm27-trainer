@@ -43,7 +43,8 @@ in FM's trainingskalender, week na week.
   top. Alles is ongedaan te maken en blijft pas bewaard als je in FM opslaat.
 - **Tactisch begrip.** De selectiepagina laat per onderdeel zien hoe goed de selectie je huidige tactiek kent, en
   zet het met één klik op het maximum, zoals de in-game editor van FM: het begrip van elke speler voor elke
-  instelling naar 100 %. Spelers die nog nooit met het team trainden, doen pas mee als ze dat hebben gedaan.
+  instelling naar 100 %. FM laat het elke speelweek weer zakken; met een schakelaar houdt de app het op 100 %
+  zolang hij open staat. Spelers die nog nooit met het team trainden, doen pas mee als ze dat hebben gedaan.
 - **Planning en export.** Week- en seizoensplan als HTML (printbaar), CSV en JSON, ook zonder module.
 - **Nederlands en Engels.** Volgt de taal van je systeem; wisselen kan altijd in de zijbalk.
 

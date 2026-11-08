@@ -15,7 +15,7 @@ Een Rust-app (egui) voor Football Manager 27:
    verkopen** aan een andere club en **tactisch begrip maximaliseren** (zoals FM's in-game editor).
 
 Repo's (GitHub `SemHiel2003`):
-- `fm27-trainer`: **openbaar**, releases v0.2.0 (genotariseerde Mac-DMG + Windows-zip), v0.2.1 en v0.2.2 (8 nov 2026,
+- `fm27-trainer`: **openbaar**, releases v0.2.0 (genotariseerde Mac-DMG + Windows-zip), v0.2.1, v0.2.2 en v0.2.3 (8 nov 2026,
   Windows-zip via GitHub Actions; de Mac-DMG komt van `./release.sh` op de Mac). Daar níét zomaar naar pushen; de dev-repo
   is er een voorouder van (fast-forward), en de release ontstaat door een tag `v*` naar de openbare repo te pushen (notes in
   `docs/releases/<tag>.md`). Lokaal heet die remote `public`. Vaste downloadlinks (altijd de nieuwste release, voor de
@@ -153,8 +153,11 @@ van u32-items (bits 0–13 niveau 0–10000, bits 14–19 tactiekinstelling 0–
 bytes vorm, u8 vlaggen, u16 niveau op `+0x0E`); `+0xD8` datum, `+0xDC` "veranderd". Begrip voor een instelling = max
 over items van (niveau − 1000 × afstand), bodem 1000. Maximaliseren zet elk item op 10000 en voegt de meest
 voorkomende instelling toe voor wie hem mist, alleen binnen de capaciteit van FM's lijst (geen eigen allocatie).
-Live getest op Windows (8 nov 2026, Ajax-save, 27 spelers). Het trainingsblok van TRAINING_MANAGER per team (zie
-boven) en `TACTICS_MANAGER` bevatten dit níét. Disassembleren kan met capstone (`pip install capstone`) op code die
+Live getest op Windows (8 nov 2026, Ajax-save, 27 spelers). **FM laat de niveaus elke speelweek zakken** (na vier
+speelmaanden stond alles van 10000 weer op 7620), vandaar de schakelaar "Op 100 % houden" (instelling
+`keep_understanding`): elke 20 s, bij de gewone verbindingscontrole, stuurt de app `max_understanding`, dat alleen
+schrijft wat gezakt is. Het trainingsblok van TRAINING_MANAGER per team (zie boven) en `TACTICS_MANAGER` bevatten
+dit níét. Disassembleren kan met capstone (`pip install capstone`) op code die
 via `read` uit fm.exe komt; game_plugin.dll ligt op Windows ingepakt op schijf maar uitgepakt in het geheugen.
 
 ## Wat is getest, waar

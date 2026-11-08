@@ -59,12 +59,15 @@ struct Settings {
     /// Aanpassen in FM toestaan op een build die nog niet live getest is.
     #[serde(default)]
     allow_untested: bool,
+    /// Tactisch begrip op 100 % houden zolang de app open is (FM laat het wekelijks zakken).
+    #[serde(default)]
+    keep_understanding: bool,
     planner: PlannerSettings,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: false, planner: PlannerSettings::default() }
+        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: false, keep_understanding: false, planner: PlannerSettings::default() }
     }
 }
 
@@ -1091,6 +1094,23 @@ impl App {
                     ui.label(theme::faint(t!("Nog niet uitgelezen.", "Not read yet.")));
                 }
             }
+            // FM laat het begrip elke speelweek een stuk zakken: op verzoek houdt de app het op 100 %
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let keep = self.settings.keep_understanding;
+                if theme::toggle(ui, &mut self.settings.keep_understanding).changed() {
+                    self.save_settings();
+                }
+                ui.label(theme::label_strong(t!("Op 100 % houden", "Keep at 100%")));
+                ui.label(RichText::new(if keep { t!("AAN", "ON") } else { t!("UIT", "OFF") }).strong().color(if keep { theme::SUCCESS } else { theme::TEXT_FAINT }));
+                ui.add(
+                    egui::Label::new(theme::faint(t!(
+                        "Zolang de app open is, zet hij elke 20 seconden terug wat FM heeft laten zakken (FM Live Editor doet dit niet vanzelf).",
+                        "While the app is open, every 20 seconds it puts back whatever FM has let drop (FM Live Editor does not do this by itself)."
+                    )))
+                    .wrap(),
+                );
+            });
         });
         theme::card(ui, |ui| {
             egui::Grid::new("squad").num_columns(8).spacing([18.0, 10.0]).striped(true).show(ui, |ui| {
@@ -1525,6 +1545,7 @@ impl eframe::App for App {
         self.snapshot(ctx);
         self.poll_analysis(ctx);
         self.live.allow_untested = self.settings.allow_untested;
+        self.live.keep_understanding = self.settings.keep_understanding;
         self.live.tick(ctx, &self.eff, &self.settings.planner, self.settings.auto_training);
         self.sidebar(ctx);
         egui::CentralPanel::default()

@@ -56,7 +56,8 @@ top. Every change can be undone, and it only sticks once you save in FM.
 
 **Tactical understanding.** The Squad page shows how well the squad knows your current tactic, per area, and can
 maximise it with one click, like FM's in-game editor does: every player's understanding of every setting goes to
-100 %. Players who have never trained with the team yet are skipped until they have.
+100 %. FM lets it drop again every game week, so there is a switch to keep it at 100 % while the app is open.
+Players who have never trained with the team yet are skipped until they have.
 
 <p align="center">
   <img src="docs/images/club.png" alt="Club page with balance, transfer and wage budget" width="49%">

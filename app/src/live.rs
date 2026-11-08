@@ -19,6 +19,8 @@ struct Snapshot {
     club: Option<Value>,
     squad: Option<Vec<Value>>,
     understanding: Option<Value>,
+    /// uitkomst van het op 100 % houden, als er iets teruggezet is
+    kept: Option<Value>,
     message: String,
     error: bool,
     untested: Option<bool>,
@@ -78,6 +80,8 @@ pub struct LiveState {
     pub wage_input: String,
     /// Aanpassen op een FM-build die nog niet live getest is (instelling van de gebruiker).
     pub allow_untested: bool,
+    /// Tactisch begrip op 100 % houden (instelling van de gebruiker).
+    pub keep_understanding: bool,
     /// De build van FM is niet getest: de module staat op alleen lezen (tenzij toegestaan).
     pub untested_build: bool,
     pub sell: SellState,
@@ -107,6 +111,7 @@ impl Default for LiveState {
             transfer_input: String::new(),
             wage_input: String::new(),
             allow_untested: false,
+            keep_understanding: false,
             untested_build: false,
             sell: SellState::default(),
             aux_rx: None,
@@ -197,6 +202,8 @@ impl LiveState {
         let ctx2 = ctx.clone();
         let label = label.to_string();
         let allow = self.allow_untested;
+        // een testopname (FM27_SNAPSHOT) mag nooit iets in FM veranderen
+        let keep = self.keep_understanding && std::env::var_os("FM27_SNAPSHOT").is_none();
         std::thread::spawn(move || {
             let mut snap = Snapshot::default();
             // eerst de keuze van de gebruiker doorgeven (oudere modules kennen dit niet: geen probleem)
@@ -222,6 +229,15 @@ impl LiveState {
             if snap.club.is_some() {
                 if let Ok(Value::Array(a)) = agent::request(json!({"cmd": "squad"})) {
                     snap.squad = Some(a);
+                }
+                // op 100 % houden: de module schrijft alleen wat gezakt is (op een niet-geteste build
+                // weigert hij, dat is dan al gemeld)
+                if keep {
+                    if let Ok(r) = agent::request(json!({"cmd": "max_understanding"})) {
+                        if r.get("players").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
+                            snap.kept = Some(r);
+                        }
+                    }
                 }
                 if let Ok(u) = agent::request(json!({"cmd": "understanding"})) {
                     snap.understanding = Some(u);
@@ -305,6 +321,19 @@ impl LiveState {
                 }
                 if let Some(u) = s.understanding {
                     self.understanding = Some(u);
+                }
+                if let Some(r) = s.kept {
+                    let n = r.get("players").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let text = t!(
+                        format!("Tactisch begrip teruggezet naar 100 % voor {n} spelers (FM had het laten zakken)."),
+                        format!("Tactical understanding put back to 100% for {n} players (FM had let it drop).")
+                    );
+                    self.log.insert(0, LogEntry { at: chrono::Local::now(), text: text.clone(), auto: true });
+                    self.log.truncate(40);
+                    if s.message.is_empty() {
+                        self.status = text;
+                        self.status_error = false;
+                    }
                 }
                 if let Some(u) = s.untested {
                     self.untested_build = u;
