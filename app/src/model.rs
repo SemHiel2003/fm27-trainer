@@ -30,16 +30,6 @@ impl Component {
         }
     }
 
-    /// Alternatieve schrijfwijzen die OCR kan opleveren.
-    pub fn ocr_aliases(self) -> &'static [&'static str] {
-        match self {
-            Component::TacticalUnderstanding => &["tactical understanding"],
-            Component::PlayerAbility => &["player ability"],
-            // Windows-OCR leest de hoofdletter I in "Buy-In" als een kleine l
-            Component::PlayerBuyIn => &["player buy-in", "player buy in", "player buyin", "player buy ln", "player buy-ln"],
-            Component::NextMatchInfo => &["next match info", "next match information"],
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

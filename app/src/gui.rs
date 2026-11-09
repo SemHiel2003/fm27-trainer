@@ -262,6 +262,7 @@ impl App {
             let _ = ctx;
             match res {
                 Ok((a, src)) => {
+                    let src_is_screen = src == t!("FM27-scherm", "FM27 screen");
                     let when = chrono::Local::now().format("%d-%m %H:%M");
                     self.eff = a.to_effectiveness(&format!("{src} · {when}"));
                     // spel-datum erbij, zodat de app weet hoe oud de meting in speltijd is
@@ -273,6 +274,9 @@ impl App {
                     }
                     let _ = crate::save_effectiveness(&self.eff);
                     let mut msg = t!(format!("{} van 17 meters gelezen.", a.gauges.len()), format!("Read {} of 17 gauges.", a.gauges.len())).to_string();
+                    if !a.lang.starts_with("english") {
+                        msg.push_str(&format!(" (FM: {})", a.lang));
+                    }
                     // een meting die niet bij de kleur van de meter past: laten nakijken
                     let doubts: Vec<&str> = a.gauges.iter().filter(|g| g.doubt).map(|g| g.factor.label()).collect();
                     if !doubts.is_empty() {
@@ -282,7 +286,16 @@ impl App {
                             format!("Please check (colour and fill disagree): {}. Fix them with 'Adjust values manually'.", doubts.join(", "))
                         ));
                     }
-                    self.set_status(msg, !doubts.is_empty());
+                    let incomplete = a.gauges.len() < 17 || a.components.len() < 4 || !doubts.is_empty();
+                    if incomplete && src_is_screen {
+                        // zonder de opname is een verkeerde uitlezing niet na te spelen
+                        msg.push(' ');
+                        msg.push_str(t!(
+                            "Klopt het niet? Stuur last-breakdown.png en last-analysis.txt uit de app-map (Instellingen → Open app-map) mee met je melding.",
+                            "Not right? Attach last-breakdown.png and last-analysis.txt from the app folder (Settings → Open app folder) to your report."
+                        ));
+                    }
+                    self.set_status(msg, incomplete);
                     self.week_plan = None;
                     self.year.clear();
                 }
@@ -1806,7 +1819,7 @@ impl App {
                 }
                 // daar staat ook de laatste schermopname (last-breakdown.png): handig om mee te sturen
                 // als een meter verkeerd gelezen wordt
-                if theme::button(ui, icon::EXPORT, t!("Open app-map (laatste schermopname)", "Open app folder (last screenshot)"), true).clicked() {
+                if theme::button(ui, icon::EXPORT, t!("Open app-map (laatste schermopname en uitlezing)", "Open app folder (last screenshot and reading)"), true).clicked() {
                     let _ = std::fs::create_dir_all(crate::data_dir());
                     open_path(&crate::data_dir());
                 }

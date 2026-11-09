@@ -4,6 +4,7 @@ mod agent;
 mod export;
 mod gui;
 mod i18n;
+mod labels;
 mod live;
 mod live_training;
 mod model;
@@ -64,6 +65,9 @@ fn print_analysis(a: &vision::Analysis) {
     if !a.missing.is_empty() {
         println!("niet gevonden: {:?}", a.missing);
     }
+    if !a.lang.starts_with("english") {
+        println!("FM-taal: {} (OCR {})", a.lang, a.ocr);
+    }
 }
 
 fn cli(args: &[String]) -> Result<bool> {
@@ -77,9 +81,9 @@ fn cli(args: &[String]) -> Result<bool> {
                 }
             };
             if args.iter().any(|a| a == "--ocr") {
-                for l in &lines {
-                    println!("OCR {:>6.0},{:>5.0} {:>6.0},{:>5.0}  {}", l.x0, l.y0, l.x1, l.y1, l.text);
-                }
+                // alles wat de uitlezing zag (zoals last-analysis.txt)
+                print!("{}", vision::report(&a, &lines));
+                return Ok(true);
             }
             print_analysis(&a);
             if args.iter().any(|a| a == "--save") {

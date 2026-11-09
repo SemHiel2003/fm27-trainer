@@ -34,6 +34,7 @@ app/                 de app (bin fm27-trainer): egui UI, OCR, planner, live-clie
   src/live_training.rs  kalender lezen → plannen → per week schrijven
   src/agent.rs       macOS: socket naar de module; Windows: roept fm27_agent::request rechtstreeks aan
   src/planner.rs, model.rs, vision.rs, export.rs, theme.rs, i18n.rs (t!("nl", "en"))
+  src/labels.rs      de Breakdown-labels in alle 20 talen van FM (gegenereerd, tools/research/breakdown_labels.py)
 agent/               crate fm27-agent: de spellogica, gedeeld
   src/lib.rs         dispatch van alle opdrachten (JSON); macOS: module in FM + socket-server
   src/mem.rs         geheugen: macOS (Mach, eigen proces), Windows (ReadProcessMemory/WriteProcessMemory op fm.exe),
@@ -44,7 +45,8 @@ agent/               crate fm27-agent: de spellogica, gedeeld
   src/understanding.rs  tactisch begrip (Tactical Understanding) per speler lezen en maximaliseren
   src/tests.rs       hele flow tegen gesimuleerd FM-geheugen, beide indelingen; MSVC-RTTI tegen testdata/rtti_test.dll
 docs/TECHNICAL.md    architectuur en posities; docs/research/fm27-transfer-offers.md: onderzoek biedingen
-tools/research/      fmq.py (onderzoeksclient), offers.py
+tools/research/      fmq.py (onderzoeksclient), offers.py, breakdown_labels.py (labels uit FM's languages.fmf),
+                     vision_regress.py (regressietest schermuitlezing: varianten van een opname, ook in andere talen)
 ```
 
 Alle opdrachten van de module: `ping`, `club`, `squad`, `set_finances`, `heal`, `lift_bans`, `inspire`, `undo`,
@@ -274,8 +276,26 @@ FM27 gebruikt nepnamen voor clubs zonder licentie: AC Milan = **Casciavit Milano
   streepje × 10. Getest door `last-breakdown.png` met Pillow te verkleinen naar 3840×2160 … 1280×720: alle 21
   waarden gelijk van 1366×768 tot 4K; op 720p (sterk vervaagd) 15 van 17. `FM27_VISION_DEBUG=1` print de
   balkmeting.
-- Elke uitlezing bewaart `last-capture.png` en, als er een Breakdown op stond, `last-breakdown.png` in
-  `%APPDATA%\FM27 Trainer`; naspelen met `target\debug\fm27-trainer.exe analyze <png> --ocr`. Hulpscripts om
+- **Sinds 9 nov 2026 (avond, versie 0.2.4)**, na "nog steeds 8 van 17, eerste 8 op 0, balken
+  90/100/100/80" en "leest helemaal niets, moet FM in het Engels?": de labels van alle FM-talen (Arabisch niet;
+  US English heeft "Coaching Support" en "Head Coach Tendencies"), matching op alleen letters (spaties/accenten
+  eruit, CJK-OCR heeft geen spaties), titels eerst (Duits: Player Ability = Player Capability = "Spielerfähigkeit"),
+  een label is minstens de helft van zijn regel. Een taart moet een dichte, ronde schijf zijn (een letter "Q" of
+  het icoon vóór het label werd als lege meter = 0 gelezen); 0 wordt altijd gemarkeerd. Als de OCR de taart als
+  "O" aan het label plakt, komt het label-einde uit de mediane letterbreedte. "Licht" is relatief aan de
+  achtergrond (op een donkere opname stond elke balk op 90–100 doordat de kaderrand als streepje telde; nu
+  telt de regelmaat van de streepjes); "gekleurd" moet ook 0,2 lichter zijn dan de achtergrond, en minder
+  verzadigde pixels in de tint van de vulling tellen mee (flets HDR). Een balk wordt ook gelezen als zijn titel
+  niet herkend is (op de rij van de andere titels, in het eigen paneel). De opname neemt op Windows het venster
+  van fm.exe (op pid), nooit een browser (die met een FM-pagina open even groot kan zijn). De OCR valt terug op
+  andere talen (Windows: geïnstalleerde OCR-talen; Mac: Vision's talen via `recognitionLanguages`, niet live
+  getest). Elke uitlezing schrijft `last-analysis.txt`; de app vraagt erom bij een onvolledige uitlezing.
+  Getest met `tools/research/vision_regress.py` op Sem's opname: 18 van 18 varianten goed (0.2.3 las van een
+  bredere set van 27 er 7 goed, 0.2.4 23). De echte opname van de melders is nog steeds niet gezien: of dit hun
+  oorzaak was, is niet bevestigd.
+- Elke uitlezing bewaart `last-capture.png`, `last-analysis.txt` en, als er een Breakdown op stond,
+  `last-breakdown.png` in `%APPDATA%\FM27 Trainer`; naspelen met `target\debug\fm27-trainer.exe analyze <png> --ocr`
+  (die uitvoer is gelijk aan `last-analysis.txt`). Hulpscripts om
   pixels te bekijken stonden in de scratchpad van de sessie (pie_debug.py, montage.py); zo nodig opnieuw maken
   met Pillow (`python -m pip install --user pillow`).
 
