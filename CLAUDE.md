@@ -15,8 +15,9 @@ Een Rust-app (egui) voor Football Manager 27:
    verkopen** aan en **kopen** van een andere club, en **tactisch begrip maximaliseren** (zoals FM's in-game editor).
 
 Repo's (GitHub `SemHiel2003`):
-- `fm27-trainer`: **openbaar**, releases v0.2.0 (genotariseerde Mac-DMG + Windows-zip), v0.2.1, v0.2.2 en v0.2.3 (8 nov 2026,
-  Windows-zip via GitHub Actions; de Mac-DMG komt van `./release.sh` op de Mac). Daar níét zomaar naar pushen; de dev-repo
+- `fm27-trainer`: **openbaar**, releases v0.2.0 (genotariseerde Mac-DMG + Windows-zip), v0.2.1, v0.2.2 (8 nov 2026) en v0.2.3 (9 nov 2026,
+  alleen Windows-zip via GitHub Actions, met de fixes voor de gebruikersmeldingen; de Mac-DMG komt van `./release.sh`
+  op de Mac en is voor 0.2.3 nog niet gemaakt). Daar níét zomaar naar pushen; de dev-repo
   is er een voorouder van (fast-forward), en de release ontstaat door een tag `v*` naar de openbare repo te pushen (notes in
   `docs/releases/<tag>.md`). Lokaal heet die remote `public`. Vaste downloadlinks (altijd de nieuwste release, voor de
   downloadpagina's elders): `https://github.com/SemHiel2003/fm27-trainer/releases/latest/download/FM27-Trainer-Windows.zip`
