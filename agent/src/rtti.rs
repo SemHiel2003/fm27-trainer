@@ -90,11 +90,17 @@ fn find_qwords(areas: &[(u64, u64)], wanted: &HashSet<u64>) -> Vec<(u64, u64)> {
     if wanted.is_empty() {
         return out;
     }
+    let lo = wanted.iter().map(|v| v & !(1u64 << 63)).min().unwrap_or(0);
+    let hi = wanted.iter().map(|v| v & !(1u64 << 63)).max().unwrap_or(u64::MAX);
     for (s, e) in areas {
         mem::for_each_chunk(*s, *e, 16 << 20, 0, &mut |a, buf| {
             for (i, c) in buf.chunks_exact(8).enumerate() {
                 let v = u64::from_le_bytes(c.try_into().unwrap());
                 let masked = v & !(1u64 << 63);
+                // eerst het bereik: een opzoeking in de set per woord is op 400 MB merkbaar
+                if masked < lo || masked > hi {
+                    continue;
+                }
                 if wanted.contains(&v) || wanted.contains(&masked) {
                     out.push((a + i as u64 * 8, masked));
                 }
@@ -225,12 +231,15 @@ fn msvc_class_name(obj: u64) -> Option<String> {
 }
 
 /// Waar de RTTI van MSVC (TypeDescriptors, Complete Object Locators, vtables) kan staan. Een gewone
-/// DLL houdt ze in .data en .rdata, maar FM27's game_plugin.dll is ingepakt (secties .xtext, .data1,
-/// .rodata, .sbss, …) en legt ze pas bij het laden neer: daarom alle secties, behalve wat zeker
-/// geen RTTI is (bronnen, relocaties, debug-informatie, importtabellen).
+/// DLL houdt ze in .data en .rdata, maar FM27's game_plugin.dll is ingepakt en legt ze pas bij het
+/// laden neer, in secties waarvan de beschermer de namen per build en per winkel verandert (Steam:
+/// .xtext, .data1, .rodata, .sbss; Game Pass 0.9.2409.0: TypeDescriptors in `.00cfg`, vtables in
+/// `.trace`, een sectie van 282 MiB die `.rsrc` heet; zie FMLibreEditor docs/recon). Op namen valt
+/// dus niet te vertrouwen: alle secties, en zonder leesbare sectietabel het hele image. De locators
+/// controleren zichzelf (hun eigen RVA), dus een sectie te veel kost alleen tijd.
 fn msvc_areas(img: &Image) -> Vec<(u64, u64)> {
-    const SKIP: &[&str] = &[".rsrc", ".reloc", ".pdata", ".idata", ".didata", ".debug", ".tls", ".gfids", ".00cfg"];
-    sections(img, |n| !SKIP.contains(&n)).collect()
+    let v: Vec<(u64, u64)> = sections(img, |_| true).filter(|(s, e)| e > s).collect();
+    if v.is_empty() && img.end > img.start { vec![(img.start, img.end)] } else { v }
 }
 
 /// Complete Object Locators in het image die aan `pred(td_rva, offset)` voldoen: (adres, td_rva).

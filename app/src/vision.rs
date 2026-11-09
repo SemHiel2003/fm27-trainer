@@ -36,6 +36,8 @@ pub struct GaugeReading {
     pub fill: f32,
     pub hue: f32,
     pub bbox: [u32; 4],
+    /// de gemeten vulling past niet bij de kleur van de meter: nakijken
+    pub doubt: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -388,7 +390,7 @@ fn find_pies_with(img: &RgbaImage, x_start: f32, x_limit: f32, yc: f32, th: f32,
         if let Some((rs, last)) = run {
             let len = last + 1 - rs;
             if len >= min_run && len <= max_run {
-                if let Some(g) = measure_pie(img, rs, last + 1, y0, y1, empty) {
+                if let Some(g) = measure_pie(img, rs, last + 1, y0, y1, yc, empty) {
                     out.push(g);
                 }
             }
@@ -419,19 +421,32 @@ struct GaugeShape {
 /// Meet een taartmeter: FM vult hem met de klok mee vanaf 12 uur, in 10 segmenten. De vulling
 /// wordt per hoeksector bepaald (36 sectoren van 10°), zodat de spaken tussen de punten niet
 /// meetellen; `empty` herkent de lege segmenten.
-fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, empty: &Pred) -> Option<GaugeShape> {
-    // verticale grenzen van de meter binnen de kolommen
-    let (mut ty0, mut ty1) = (u32::MAX, 0u32);
-    for y in y0..y1 {
-        if (xa..xb).any(|x| {
-            let p = img.get_pixel(x, y);
-            is_colored(p) || empty(p)
-        }) {
-            ty0 = ty0.min(y);
-            ty1 = ty1.max(y);
-        }
+fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, yc: f32, empty: &Pred) -> Option<GaugeShape> {
+    // Verticale grenzen van de meter binnen de kolommen: de aaneengesloten reeks rijen rond het
+    // midden van het label. Valt er in de zoekband ook een stuk van de meter erboven of eronder
+    // (grotere tekst in FM, kleinere rijafstand), dan hoort dat er niet bij.
+    let has: Vec<bool> = (y0..y1)
+        .map(|y| {
+            (xa..xb).any(|x| {
+                let p = img.get_pixel(x, y);
+                is_colored(p) || empty(p)
+            })
+        })
+        .collect();
+    let rows: Vec<usize> = (0..has.len()).filter(|i| has[*i]).collect();
+    let mid = (yc - y0 as f32).max(0.0);
+    let start = *rows.iter().min_by(|a, b| (**a as f32 - mid).abs().total_cmp(&(**b as f32 - mid).abs()))?;
+    let (mut lo, mut hi) = (start, start);
+    while lo > 0 && (has[lo - 1] || (lo > 1 && has[lo - 2])) {
+        lo -= 1;
     }
-    if ty0 == u32::MAX {
+    while hi + 1 < has.len() && (has[hi + 1] || (hi + 2 < has.len() && has[hi + 2])) {
+        hi += 1;
+    }
+    let (ty0, ty1) = (y0 + lo as u32, y0 + hi as u32);
+    // een taart is rond: een blok dat veel breder dan hoog is (of andersom) is iets anders
+    let (bw, bh) = ((xb - xa) as f32, (ty1 - ty0 + 1) as f32);
+    if bw > bh * 1.6 || bh > bw * 1.6 {
         return None;
     }
     // Altijd op een vaste maat meten: op een klein scherm (1366×768, of 1080p met een kleine
@@ -449,9 +464,9 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, empty: &Pred
     let r = pw.max(ph) as f32 / 2.0;
 
     const BINS: usize = 36;
-    let mut col = [0u32; BINS];
+    // (sector, gekleurd, tint, binnenring) per pixel van de ring tussen het midden en de rand
+    let mut px: Vec<(usize, bool, f32, bool)> = Vec::new();
     let mut gry = [0u32; BINS];
-    let (mut hx, mut hy, mut ncol) = (0f32, 0f32, 0u32);
     for y in 0..ph {
         for x in 0..pw {
             let dx = x as f32 - cx;
@@ -468,14 +483,48 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, empty: &Pred
             let bin = ((a / 360.0 * BINS as f32) as usize).min(BINS - 1);
             let p = pie.get_pixel(x, y);
             if is_colored(p) {
-                col[bin] += 1;
-                let (h, _, _) = hsv(p);
-                hx += h.to_radians().cos();
-                hy += h.to_radians().sin();
-                ncol += 1;
+                px.push((bin, true, hsv(p).0, d < r * 0.85));
             } else if empty(p) {
                 gry[bin] += 1;
             }
+        }
+    }
+    // De vulling heeft één kleur (oranje, geel of groen, naar het niveau). Die tint komt uit het
+    // binnenste van de ring, waar geen achtergrond doorheen mengt; alleen pixels in die tint tellen
+    // als gevuld. Een rand die met een gekleurde achtergrond (clubkleuren) mengt, telt zo niet mee.
+    let hue_dist = |a: f32, b: f32| {
+        let d = (a - b).rem_euclid(360.0);
+        d.min(360.0 - d)
+    };
+    let mut hist = [0u32; 36];
+    for (_, _, h, inner) in &px {
+        if *inner {
+            hist[((h / 10.0) as usize).min(35)] += 1;
+        }
+    }
+    let peak = (0..36).max_by_key(|i| hist[*i]).unwrap_or(0);
+    let fill_hue = if hist[peak] == 0 {
+        None
+    } else {
+        let (mut sx, mut sy) = (0f32, 0f32);
+        for (_, _, h, inner) in &px {
+            if *inner && hue_dist(*h, peak as f32 * 10.0 + 5.0) <= 15.0 {
+                sx += h.to_radians().cos();
+                sy += h.to_radians().sin();
+            }
+        }
+        Some(sy.atan2(sx).to_degrees().rem_euclid(360.0))
+    };
+    let mut col = [0u32; BINS];
+    let (mut hx, mut hy, mut ncol) = (0f32, 0f32, 0u32);
+    for (bin, _, h, _) in &px {
+        if fill_hue.is_some_and(|f| hue_dist(*h, f) <= 25.0) {
+            col[*bin] += 1;
+            hx += h.to_radians().cos();
+            hy += h.to_radians().sin();
+            ncol += 1;
+        } else {
+            gry[*bin] += 1;
         }
     }
     let seen = (0..BINS).filter(|i| col[*i] + gry[*i] > 0).count();
@@ -531,13 +580,30 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, empty: &Pred
     })
 }
 
-/// Meter-score: het gevulde deel van de taart (4 van de 10 segmenten = 40). De tint loopt daar
-/// in FM mee op (oranje laag, geel midden, groen hoog) en wordt alleen nog ter informatie bewaard.
-fn gauge_score(fill: f32, _hue: f32, has_color: bool) -> f32 {
-    if !has_color {
-        return 0.0;
+/// Welk deel van een taart (0–1) bij de kleur van de vulling past. FM kleurt een meter naar zijn
+/// niveau (gemeten op 2560×1440, Ajax- en Sunderland-save): 20–40 % oranje (tint ~43°), 50–70 %
+/// geel (~60°), 90 % groen (~120°); 40 % kan ook geel zijn. De grenzen hier zijn ruim genomen.
+fn color_band(hue: f32) -> (f32, f32) {
+    if hue < 50.0 {
+        (0.0, 0.5)
+    } else if hue < 90.0 {
+        (0.3, 0.9)
+    } else {
+        (0.7, 1.0)
     }
-    (fill * 100.0).clamp(0.0, 100.0)
+}
+
+/// Meter-score: het gevulde deel van de taart (4 van de 10 segmenten = 40), en of dat bij de kleur
+/// past. Past het niet (een oranje meter die als 70 gemeten wordt), dan is de meting fout gegaan:
+/// de score wordt naar de rand van wat de kleur toelaat gezet en de meter gemarkeerd, zodat de
+/// gebruiker hem nakijkt.
+fn gauge_score(fill: f32, hue: f32, has_color: bool) -> (f32, bool) {
+    if !has_color {
+        return (0.0, false);
+    }
+    let (lo, hi) = color_band(hue);
+    let doubt = fill < lo - 0.01 || fill > hi + 0.01;
+    ((fill.clamp(lo, hi) * 100.0).clamp(0.0, 100.0), doubt)
 }
 
 /// Balkmeter rechts van een onderdeel-titel: een rij streepjes (11 plekken) waarvan er één
@@ -724,8 +790,8 @@ pub fn analyze_with_lines(img: &RgbaImage, lines: &[OcrLine]) -> Analysis {
         let limit = next_label_x.min(label_end + th * 22.0);
         match find_pie(img, label_end + th * 0.4, limit, line.yc(), th) {
             Some(g) => {
-                let score = gauge_score(g.fill, g.hue, g.fill > 0.0);
-                gauges.push(GaugeReading { factor: f, score, fill: g.fill, hue: g.hue, bbox: g.bbox });
+                let (score, doubt) = gauge_score(g.fill, g.hue, g.fill > 0.0);
+                gauges.push(GaugeReading { factor: f, score, fill: g.fill, hue: g.hue, bbox: g.bbox, doubt });
             }
             None => missing.push(f),
         }
@@ -805,8 +871,8 @@ pub fn analyze_with_lines(img: &RgbaImage, lines: &[OcrLine]) -> Analysis {
             None
         };
         if let Some(g) = hit {
-            let score = gauge_score(g.fill, g.hue, g.fill > 0.0);
-            gauges.push(GaugeReading { factor: f, score, fill: g.fill, hue: g.hue, bbox: g.bbox });
+            let (score, doubt) = gauge_score(g.fill, g.hue, g.fill > 0.0);
+            gauges.push(GaugeReading { factor: f, score, fill: g.fill, hue: g.hue, bbox: g.bbox, doubt });
             missing.retain(|m| *m != f);
         }
     }
@@ -860,4 +926,135 @@ pub fn analyze_screen() -> Result<(Analysis, RgbaImage)> {
         );
     }
     Ok((a, img))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    /// Een taartmeter zoals FM27 hem tekent: 10 segmenten met lichte spaken, `filled` gevuld met de
+    /// klok mee vanaf 12 uur in `fill`, de rest bijna wit, met zachte randen (4×4 deelpixels) op de
+    /// achtergrond `bg`. Midden op (cx, cy), straal `r`.
+    fn draw_pie(img: &mut RgbaImage, cx: f32, cy: f32, r: f32, filled: u32, fill: [u8; 3], bg: [u8; 3]) {
+        const EMPTY: [f32; 3] = [218.0, 206.0, 208.0];
+        const SPOKE: [f32; 3] = [190.0, 210.0, 222.0];
+        for y in 0..img.height() {
+            for x in 0..img.width() {
+                let mut acc = [0f32; 3];
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let dx = x as f32 + (sx as f32 + 0.5) / 4.0 - cx;
+                        let dy = y as f32 + (sy as f32 + 0.5) / 4.0 - cy;
+                        let d = (dx * dx + dy * dy).sqrt();
+                        let c: [f32; 3] = if d > r {
+                            bg.map(|v| v as f32)
+                        } else {
+                            let a = dx.atan2(-dy).to_degrees().rem_euclid(360.0);
+                            let seg = (a / 36.0) as u32;
+                            let edge = (a - seg as f32 * 36.0).min((seg + 1) as f32 * 36.0 - a);
+                            // spaak: ~1 px breed, ongeacht de straal
+                            if edge.to_radians() * d < 0.6 && d > 1.0 {
+                                SPOKE
+                            } else if seg < filled {
+                                fill.map(|v| v as f32)
+                            } else {
+                                EMPTY
+                            }
+                        };
+                        for i in 0..3 {
+                            acc[i] += c[i] / 16.0;
+                        }
+                    }
+                }
+                let o = img.get_pixel(x, y);
+                // alleen het gebied van de taart (met rand) overschrijven
+                let dx = x as f32 + 0.5 - cx;
+                let dy = y as f32 + 0.5 - cy;
+                if (dx * dx + dy * dy).sqrt() <= r + 1.5 {
+                    img.put_pixel(x, y, Rgba([acc[0].round() as u8, acc[1].round() as u8, acc[2].round() as u8, 255]));
+                } else {
+                    img.put_pixel(x, y, *o);
+                }
+            }
+        }
+    }
+
+    fn fm_color(filled: u32) -> [u8; 3] {
+        match filled {
+            0..=4 => [255, 183, 0], // oranje (~43°)
+            5..=8 => [255, 255, 0], // geel
+            _ => [0, 235, 40],      // groen
+        }
+    }
+
+    /// Elke vulling van 0 tot 10 segmenten, klein (1366×768: ~9 px straal) en groot (2560×1440:
+    /// ~14 px straal), op de achtergronden die een paneel in FM27 kan hebben: donker en half
+    /// doorzichtig over de clubkleur (gemeten: (70, 49, 53) bij Ajax en Sunderland), de lichtere
+    /// gemarkeerde rij, en donkere tinten van andere clubkleuren.
+    #[test]
+    fn pies_on_any_background() {
+        let backgrounds: [[u8; 3]; 7] = [[70, 49, 53], [92, 80, 84], [95, 25, 40], [30, 40, 85], [28, 75, 40], [85, 78, 25], [40, 40, 40]];
+        let mut wrong = Vec::new();
+        for bg in backgrounds {
+            for r in [9.0f32, 14.0] {
+                for filled in 0..=10u32 {
+                    let mut img = RgbaImage::from_pixel(80, 48, Rgba([bg[0], bg[1], bg[2], 255]));
+                    draw_pie(&mut img, 40.0, 24.0, r, filled, fm_color(filled), bg);
+                    let th = r * 1.4; // labelhoogte op die schaal
+                    let got = find_pie(&img, 0.0, 80.0, 24.0, th).map(|g| {
+                        let (score, _) = gauge_score(g.fill, g.hue, g.fill > 0.0);
+                        score.round() as u32
+                    });
+                    if got != Some(filled * 10) {
+                        wrong.push(format!("bg {bg:?} r {r}: {filled} segmenten → {got:?}"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "verkeerd gelezen:\n{}", wrong.join("\n"));
+    }
+
+    /// Grotere tekst in FM (of een kleinere rijafstand): de zoekband rond een label reikt dan tot in
+    /// de meters van de rij erboven en eronder. Elke meter moet zijn eigen waarde houden.
+    #[test]
+    fn pies_in_tight_rows() {
+        let bg = [70, 49, 53];
+        let mut wrong = Vec::new();
+        for r in [9.0f32, 14.0] {
+            // rijafstand in FM: ~2,7 × de straal van een meter (38 px bij 14 px straal)
+            let pitch = (r * 2.7).round();
+            // labelhoogte / rijafstand: 0,53 op 2560×1440 met standaardtekst, groter met grotere tekst
+            for ratio in [0.53f32, 0.62, 0.7, 0.8, 0.9, 1.0, 1.1] {
+                let th = pitch * ratio;
+                let rows = [7u32, 3, 9, 2, 5];
+                let h = (pitch * (rows.len() as f32 + 1.0)) as u32;
+                let mut img = RgbaImage::from_pixel(80, h, Rgba([bg[0], bg[1], bg[2], 255]));
+                for (i, k) in rows.iter().enumerate() {
+                    draw_pie(&mut img, 40.0, pitch * (i as f32 + 1.0), r, *k, fm_color(*k), bg);
+                }
+                for (i, k) in rows.iter().enumerate() {
+                    let yc = pitch * (i as f32 + 1.0);
+                    let got = find_pie(&img, 0.0, 80.0, yc, th).map(|g| gauge_score(g.fill, g.hue, g.fill > 0.0).0.round() as u32);
+                    if got != Some(k * 10) {
+                        wrong.push(format!("r {r} tekst/rij {ratio}: rij {i} met {k} segmenten → {got:?}"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "verkeerd gelezen:
+{}", wrong.join("
+"));
+    }
+
+    #[test]
+    fn colour_disagrees_with_fill() {
+        // een oranje meter (laag) die als 70 % gemeten wordt: naar de rand van oranje, en nakijken
+        assert_eq!(gauge_score(0.7, 43.0, true), (50.0, true));
+        assert_eq!(gauge_score(0.4, 43.0, true), (40.0, false));
+        assert_eq!(gauge_score(0.4, 59.0, true), (40.0, false), "40 % kan geel zijn (Ajax-save)");
+        assert_eq!(gauge_score(0.9, 120.0, true), (90.0, false));
+        assert_eq!(gauge_score(0.3, 120.0, true), (70.0, true));
+        assert_eq!(gauge_score(0.0, 0.0, false), (0.0, false));
+    }
 }

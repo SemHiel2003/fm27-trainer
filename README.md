@@ -95,8 +95,10 @@ Players who have never trained with the team yet are skipped until they have.
    there is nothing to install and no module to load.
 
 > Live-tested on the Steam build of November 2026 (26340721): reading, budgets, morale, injuries, training and
-> selling, each with undo. After an FM patch the app is read-only until the new build has been checked; you can
-> allow changes yourself in Settings (back up your save first).
+> selling, each with undo. FM27 from the Xbox app / Game Pass (0.9.2409.0, the same update) is recognised too, with
+> the same checks; it has not been live-tested on Game Pass yet. FM on an Xbox console cannot be read: FM has to
+> run on the same PC. After an FM patch the app is read-only until the new build has been checked; you can allow
+> changes yourself in Settings (back up your save first).
 
 ## How it works
 

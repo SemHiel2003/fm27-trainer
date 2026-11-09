@@ -56,7 +56,7 @@ met `expect`). Zie `agent/src/lib.rs`.
 
 - Rust stable met de MSVC-toolchain (`rustup default stable-x86_64-pc-windows-msvc`) en Visual Studio Build Tools
   (workload "Desktop development with C++").
-- `cargo test -p fm27-agent`: 7 tests, horen allemaal te slagen.
+- `cargo test -p fm27-agent`: 8 tests, `cargo test -p fm27-trainer`: 3 tests (nagemaakte taartmeters); horen allemaal te slagen.
 - `cargo run -p fm27-trainer`: de app. `cargo build --release -p fm27-trainer` → `target\release\fm27-trainer.exe`
   (statische C-runtime via `.cargo/config.toml`).
 - **De release-exe heeft geen console** (`windows_subsystem = "windows"`). Gebruik voor de CLI de debug-build:
@@ -76,14 +76,19 @@ met `expect`). Zie `agent/src/lib.rs`.
 - De app zoekt `fm.exe` (Toolhelp), opent het met `PROCESS_VM_READ | VM_WRITE | VM_OPERATION | QUERY_INFORMATION`
   en leest/schrijft van buitenaf. FM gewoon via Steam starten; geen module of injectie.
 - De native kern heet `game_plugin.dll`. Een build heet `PE-<linktijd>-<SizeOfImage>`; Steam 26340721 =
-  `PE-6AE565AF-1821C000`. Onbekende build → geen vaste adressen (staflijst, clublijst, datum).
+  `PE-6AE565AF-1821C000`, Game Pass / Xbox-app 0.9.2409.0 = `PE-6AE563A1-175DA000` (zelfde update, zelfde
+  objectindeling; vaste plekken uit FMLibreEditor `profiles/fm27/gamepass-0.9.2409.0.toml`; schrijven staat aan,
+  **niet door ons live getest**). Onbekende build → geen vaste adressen (staflijst, clublijst, datum).
+  Game Pass draait ook als `fm.exe` (uit `...\Content\`); een Xbox-console kan de app niet lezen.
 - **Schrijven staat op Windows aan** voor Steam-build 26340721 (`writes_tested: true` in `BUILDS`,
   `agent/src/game.rs`; live gecontroleerd op 8 nov 2026). Op een onbekende build (na een FM-patch) staat de app op
   alleen lezen; de gebruiker kan het per sessie toestaan (Instellingen → "Aanpassen op een niet-geteste FM-versie" →
   opdracht `allow_untested`).
 - `game_plugin.dll` is **ingepakt**: secties heten `.xtext`, `.data1`, `.shared`, `.rodata`, `.sbss` (307 MB, wordt
-  bij het laden gevuld), `.rdata` (klein). De MSVC-RTTI-zoeker doorzoekt daarom alle secties behalve
-  bronnen/relocaties/debug/imports (`msvc_areas` in `agent/src/rtti.rs`); een blok dat niet in één keer leesbaar is,
+  bij het laden gevuld), `.rdata` (klein). De beschermer hernoemt ze per build: op Game Pass staan de TypeDescriptors
+  in `.00cfg` en heet de grote RWX-sectie `.rsrc`. De MSVC-RTTI-zoeker doorzoekt daarom **alle** secties, ongeacht de
+  naam (`msvc_areas` in `agent/src/rtti.rs`; tot 9 nov 2026 sloeg hij `.rsrc`/`.00cfg` over, waardoor de app op Game
+  Pass geen manager vond); een blok dat niet in één keer leesbaar is,
   wordt in kleinere stukken geprobeerd (`mem::for_each_chunk`). `class_of` op het managerobject zelf geeft None
   (vbptr); de manager wordt via de staflijst gevonden. Een klasse opzoeken kost eenmalig ~1,5 s, een volledige
   heap-scan (3,5 GB) ~1,5 s in een release-build.
@@ -138,8 +143,14 @@ De manager wordt gevonden via de staflijst (Windows eerst) of RTTI `db::HUMAN_NO
 
 **Training** (gemeten op macOS én Windows, beide **+0x28**): een blok per team met de team-pointer en op +0x28 een
 lijst van weekrecords (0x60 bytes: `+0x00` naam van het schema (FM-string), `+0x0C` maandag, `+0x10` 7 × [u16 0,
-sessie 1, sessie 2, extra]). Op Windows probeert de code voor de zekerheid ook 0x08–0x80 met strenge controles,
-voor het geval een latere build afwijkt. Sessiecodes: 0–7 Tactical Understanding, 100–108 Match Preparation, 200–228 Footballing
+sessie 1, sessie 2, extra], `+0x48` u32 nummer van het schema-sjabloon). Op Windows probeert de code voor de
+zekerheid ook 0x08–0x80 met strenge controles, voor het geval een latere build afwijkt. **Zoeken** (9 nov 2026, na
+meldingen "training calendar not found"): alle heapwoorden gelijk aan de team-pointer, zonder limiet (vroeger stopte
+het bij 20.000; Sunderland-save: 2.042 treffers, kalender nummer 1.462). Een week telt als de maandag geldig is, het
+eerste woord per dag klein (≤ 0xFF, nooit geschreven) en ≥ 2/3 van de 21 vakken een bekende code (≤ 600), waarvan
+≥ 5 niet nul; `set_week` laat een dag met een onbekende code ongemoeid. Vindt het niets, dan noemt de fout het aantal
+treffers en waarom bijna-kandidaten afvielen. De echte oorzaak bij de gebruikers is niet gezien (geen save van hen).
+Sessiecodes: 0–7 Tactical Understanding, 100–108 Match Preparation, 200–228 Footballing
 Development, 300–307 Physical, 400 Team Bonding, 401 Community, 402 reizen, 500 wedstrijd.
 
 **Opstellingen**: `simatch::PREPARED_TACTICS_CREATOR_ARRAY`, `+0x08` lijst, `+0x28` 26 × u32 persoons-id
@@ -180,6 +191,7 @@ via `read` uit fm.exe komt; game_plugin.dll ligt op Windows ingepakt op schijf m
 | spelregels (`set_human_flags`) | n.v.t. (plek onbekend) | gelezen (0); effect in FM door de gebruiker te controleren |
 | tactisch begrip (`understanding`, `max_understanding`) | alleen simulatie (offset 0xF8 is een gok) | ✅ gelezen en gemaximaliseerd (8 nov 2026) |
 | MSVC-RTTI | n.v.t. | ✅ testdata én live (census, opstellingen) |
+| Game Pass / Xbox-app (0.9.2409.0) | n.v.t. | alleen simulatie (build, datum, staflijst, kalender); posities van FMLibreEditor |
 
 ## Taak 1: Windows live controleren — gedaan (8 nov 2026)
 
@@ -239,6 +251,15 @@ FM27 gebruikt nepnamen voor clubs zonder licentie: AC Milan = **Casciavit Milano
   alleen bewaard. Balken: 11 plekken, één gekleurde (de stand) en één witte streep; stand = plek vanaf het
   eerste streepje / 10. De doorschijnende paneelachtergrond kan een deel van de streepjes in ruis zetten.
 - Windows-OCR leest "Player Buy-In" als "Player Buy-ln" (alias in `model.rs`).
+- **Sinds 9 nov 2026** (melding: "Build Up-ring niet half vol, app zegt 70"): een taart wordt uitgesneden als de
+  aaneengesloten rijen rond het midden van het label (een buurmeter in de zoekband telt niet meer mee; met grotere
+  tekst, tekst/rij ≥ 0,7, las de oude code 7 segmenten als 80 of 50), alleen pixels in de tint van de vulling tellen
+  (meest voorkomende tint in de binnenring, ±25°), en FM's kleur is een controle: 20–40 % oranje (~43°), 50–70 % geel
+  (~60°), 90 % groen (~120°), 40 % was bij Ajax geel. Valt een meting buiten de band van zijn kleur, dan wordt hij
+  naar de rand gezet en gemarkeerd (`GaugeReading.doubt`; de app vraagt de gebruiker hem na te kijken). Tests:
+  `pies_on_any_background`, `pies_in_tight_rows` in `vision.rs`. Op Sem's eigen opnames (Ajax, Sunderland) lazen oud
+  en nieuw alles goed, ook verkleind tot 1366×768: de opname van de gebruiker is nooit gezien. Vraag bij een nieuwe
+  melding om `last-breakdown.png` (Instellingen → "Open app-map").
 - **Resolutie-onafhankelijk sinds 8 nov 2026** (melding van een gebruiker: "Read 8 of 17 gauges", key factors
   op 0 of 50): `analyze_image` leest eerst op ware grootte en, als de labels niet ~20 px hoog zijn (`REF_TEXT`,
   de maat van 2560×1440 op 100 %), nog eens op een kopie die naar die maat is geschaald (zonder enig herkend

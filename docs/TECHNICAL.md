@@ -35,7 +35,11 @@ simulated memory for tests), `rtti.rs` (Itanium and MSVC RTTI) and `game.rs` (la
 
 - The app opens `fm.exe` with `PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
   PROCESS_QUERY_INFORMATION`; FM can be started from Steam as usual. The native core is `game_plugin.dll`; a build
-  is identified by its PE link timestamp and SizeOfImage (`PE-6AE565AF-1821C000` for Steam 26340721).
+  is identified by its PE link timestamp and SizeOfImage (`PE-6AE565AF-1821C000` for Steam 26340721,
+  `PE-6AE563A1-175DA000` for Game Pass / Xbox app 0.9.2409.0). The Game Pass build is the same November update
+  (linked 526 s earlier) with the same object layout; only the statics moved (staff `0x5683E08`, clubs
+  `0x5683F78`, date `0x56257C8`, from FMLibreEditor's `gamepass-0.9.2409.0.toml`). Its process is `fm.exe` too,
+  run from the package's `Content` folder, and opens with the same rights.
 - The human manager is found in the game's staff array (the `(begin, end)` pair at RVA `0x5705818`), with MSVC
   RTTI as a fallback: `[vtable-8]` is the Complete Object Locator, whose TypeDescriptor holds
   `.?AVHUMAN_NON_PLAYER@db@@`. The in-game date is at RVA `0x56AF378`.
@@ -53,10 +57,19 @@ simulated memory for tests), `rtti.rs` (Itanium and MSVC RTTI) and `game.rs` (la
   its week list at `+0x28` from the team pointer on Windows too (measured live); the agent still tries nearby
   offsets as a fallback, accepting a list only when every week has a valid date, ascending Mondays and valid
   session codes.
+- Finding the calendar: every heap word that equals the team pointer is a candidate, with no cap (a fresh
+  Sunderland save had 2,042 of them and the calendar was number 1,462; a big club deep into a save has many
+  more). A week is accepted when its Monday is a valid date, the first word of each day block is small (0 in
+  every save seen; never written) and at least two thirds of the 21 slots hold known codes (≤ 600), five of them
+  non-zero. `set_week` leaves a day with an unknown code alone. When nothing is found, the error lists how many
+  candidates were seen and why near misses were rejected.
 - `game_plugin.dll` is packed: its sections are named `.xtext`, `.data1`, `.shared`, `.rodata`, `.sbss` (307 MB,
-  filled while loading), `.rdata` (small) and so on, not the usual `.text`/`.data`/`.rdata`. The MSVC RTTI
-  lookup (TypeDescriptors, Complete Object Locators, vtables) therefore scans every section except resources,
-  relocations, debug and import tables; a chunk that cannot be read in one go is retried in smaller pieces.
+  filled while loading), `.rdata` (small) and so on, not the usual `.text`/`.data`/`.rdata`. The protector
+  renames them per build: on Game Pass 0.9.2409.0 the TypeDescriptors are in `.00cfg`, the vtables in `.trace`
+  and the big read-write-execute section is called `.rsrc`. The MSVC RTTI lookup (TypeDescriptors, Complete
+  Object Locators, vtables) therefore scans every section, whatever its name (the whole image if the section
+  table cannot be read); a locator checks itself by its own RVA, so an extra section only costs time (a class
+  lookup takes about 1.1 s). A chunk that cannot be read in one go is retried in smaller pieces.
   Finding a class this way takes about 1.5 s once (the vtables are cached), and a full scan of FM's heap (3.5 GB)
   through `ReadProcessMemory` about 1.5 s in a release build. An unoptimised build is some 40 times slower, so
   the workspace builds the agent crate with `opt-level = 3` in the dev profile as well.
@@ -142,9 +155,19 @@ The Breakdown pies have 10 segments and fill clockwise from 12 o'clock; the empt
 (measured on Windows, 8 November 2026) and the spokes between segments are light too. Each pie is first resampled
 to 72 px (on a 1366×768 screen a pie is only 12–18 px across, which left many sectors without a single pixel and
 made gauges disappear or read 0) and then measured in 36 angular sectors: the last sector that is really coloured gives the filled share, which is the score (4 of 10
-segments = 40). The hue runs along with it (orange low, yellow middle, green high) and is only kept for
-information. Candidate pies are found by their coloured and near-white pixels, with the older mid-grey look as a
-fallback, because the lighter background of a highlighted row would otherwise pass for an empty gauge. The
+segments = 40). Since 9 November 2026:
+- A pie is cut out as the run of rows around its label's centre, so a gauge above or below that falls inside the
+  search band (larger text in FM, tighter rows) is no longer measured with it; a cut-out that is far from round
+  is rejected. Before this, a text-to-row ratio of 0.7 or more read 7 segments as 80 or 50 (synthetic test
+  `pies_in_tight_rows`, now correct up to 1.1).
+- Only pixels in the pie's own fill colour count as filled: the fill hue is the most common hue in the inner
+  ring (no background mixes in there), and pixels more than 25° away from it count as not filled.
+- FM paints a gauge by level: 20–40 % orange (~43°), 50–70 % yellow (~60°), 90 % green (~120°); 40 % was yellow
+  on the Ajax save. A reading outside the band of its colour (orange above 50 %, yellow below 30 % or above 90 %,
+  green below 70 %) is clamped to that band and flagged; the app asks the user to check flagged gauges.
+
+Candidate pies are found by their coloured and near-white pixels, with the older mid-grey look as a fallback,
+because the lighter background of a highlighted row would otherwise pass for an empty gauge. The
 component bars have 11 slots with one coloured marker (the level) and one white marker; the level is the
 marker's slot counted from the first tick (slot 7 of 11 = 60). The translucent panel background can drown the
 ticks on one side, so the count of 11 is assumed when the chain of ticks is incomplete. A capture is saved as

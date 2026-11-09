@@ -159,6 +159,11 @@ pub const BUILDS: &[Build] = &[
     // FMLibreEditor steam-26340721.toml: game_plugin.dll met SizeOfImage 0x1821C000 en linktijd 0x6AE565AF;
     // live getest (8 nov 2026, Ajax-save): uitlezen, budget, moraal, genezen, training, verkopen, undo
     Build { id: "PE-6AE565AF-1821C000", label: "Steam 26340721 Windows", writes_tested: true, current_date: 0x56AF378, staff: 0x5705818, clubs: 0x5705988 },
+    // Game Pass / Microsoft Store / Xbox-app 0.9.2409.0 (update van 2 nov 2026), FMLibreEditor
+    // gamepass-0.9.2409.0.toml: dezelfde update als Steam 26340721 (526 s eerder gelinkt), objectindeling
+    // gelijk, alleen de vaste plekken liggen anders. Niet door dit project live getest; aanpassen staat
+    // aan omdat elke keten en lijst vóór het schrijven op dezelfde manier gecontroleerd wordt als op Steam.
+    Build { id: "PE-6AE563A1-175DA000", label: "Game Pass 0.9.2409.0 Windows", writes_tested: true, current_date: 0x56257C8, staff: 0x5683E08, clubs: 0x5683F78 },
 ];
 
 /// Aanpassen toestaan op een build die (nog) niet live getest is; de gebruiker zet dit zelf aan.
@@ -847,21 +852,47 @@ pub fn game_date() -> Result<FmDate, String> {
     d.ok_or_else(|| "spel-datum niet leesbaar / game date not readable".into())
 }
 
+/// Een sessiecode zoals FM27 ze kent (0–7, 100–108, 200–228, 300–307, 400–402, 500).
+fn known_code(c: u16) -> bool {
+    c <= 600
+}
+
+/// Een weekrecord: een geldige maandag en sessiecodes in de dagblokken. Het eerste woord van een
+/// dagblok is 0 in alle saves die gemeten zijn; het wordt nooit geschreven en hier alleen als klein
+/// getal verwacht (een vlag of een intensiteit zou passen). Een enkele onbekende code (een leeg
+/// vak, een nieuw soort dag) keurt de week niet af: `set_week` laat zo'n dag toch ongemoeid.
 fn week_ok(rec: u64) -> bool {
     if !mem::is_ptr(rec) || FmDate::read(rec + WEEK_DATE).is_none() {
         return false;
     }
     let Some(b) = mem::read_bytes(rec + WEEK_DAYS, 56) else { return false };
-    b.chunks_exact(8).all(|d| {
-        let v: Vec<u16> = d.chunks_exact(2).map(|x| u16::from_le_bytes([x[0], x[1]])).collect();
-        v[0] == 0 && v[1..].iter().all(|c| *c <= 600)
-    })
+    let words: Vec<u16> = b.chunks_exact(2).map(|x| u16::from_le_bytes([x[0], x[1]])).collect();
+    if words.chunks_exact(4).any(|d| d[0] > 0xFF) {
+        return false;
+    }
+    let codes: Vec<u16> = words.chunks_exact(4).flat_map(|d| d[1..].to_vec()).collect();
+    let known = codes.iter().filter(|c| known_code(**c)).count();
+    // een echte week heeft altijd rust/herstel, wedstrijden of trainingen (codes boven 0)
+    let nonzero = codes.iter().filter(|c| known_code(**c) && **c != 0).count();
+    known * 3 >= codes.len() * 2 && nonzero >= 5
 }
 
+/// Lengte van de weeklijst: FM houdt de weken van het seizoen bij (en mogelijk de geschiedenis).
+const MAX_WEEKS: usize = 2_000;
+
 fn weeks_header_ok(hdr: u64) -> Option<Vec<u64>> {
-    let (_, list) = pointer_list(hdr, 520)?;
+    let (_, list) = pointer_list(hdr, MAX_WEEKS)?;
     if list.is_empty() || !week_ok(list[0]) || !week_ok(*list.last()?) {
         return None;
+    }
+    // de maandagen lopen op (eerste, tweede en laatste week)
+    let first = FmDate::read(list[0] + WEEK_DATE)?;
+    let last = FmDate::read(*list.last()? + WEEK_DATE)?;
+    if list.len() >= 2 {
+        let second = FmDate::read(list[1] + WEEK_DATE)?;
+        if !(first < second && second <= last) {
+            return None;
+        }
     }
     Some(list)
 }
@@ -889,7 +920,36 @@ fn tb_candidates() -> Vec<u64> {
     v
 }
 
+/// Lijkt `hdr` op een weeklijst (lijst van pointers naar records met een geldige maandag), maar
+/// keurt de controle hem af? Dan waarom, kort, voor in de foutmelding: zo kan een gebruiker
+/// melden wat er in zijn save anders is.
+fn weeks_rejection(hdr: u64) -> Option<String> {
+    let begin = mem::u64_at(hdr)?;
+    let end = mem::u64_at(hdr + 8)?;
+    if !mem::is_ptr(begin) || end <= begin || (end - begin) % 8 != 0 || (end - begin) / 8 > 100_000 {
+        return None;
+    }
+    let n = (end - begin) / 8;
+    let first = mem::u64_at(begin).filter(|r| mem::is_ptr(*r))?;
+    FmDate::read(first + WEEK_DATE)?;
+    if n as usize > MAX_WEEKS {
+        return Some(format!("{n} weken"));
+    }
+    let last = mem::u64_at(end - 8)?;
+    let bad = [first, last].into_iter().find(|r| !week_ok(*r))?;
+    let date = FmDate::read(bad + WEEK_DATE).map(|d| format!("{}/{}", d.year, d.doy)).unwrap_or_else(|| "?".into());
+    let days: Vec<String> = mem::read_bytes(bad + WEEK_DAYS, 56)
+        .map(|b| b.chunks_exact(8).map(|d| format!("{:?}", d.chunks_exact(2).map(|x| u16::from_le_bytes([x[0], x[1]])).collect::<Vec<_>>())).collect())
+        .unwrap_or_default();
+    Some(format!("{n} weken, week {date}: {}", days.join(" ")))
+}
+
 /// De weeklijst van het team van de manager (adres van de lijstkop).
+///
+/// Elke plek in de heap die naar het team wijst, is een kandidaat; het trainingsblok heeft de
+/// weeklijst 0x28 verder. Er wordt niet meer bij een vast aantal treffers gestopt: bij een grote
+/// club (veel wedstrijden, historie, nieuws) wijzen tienduizenden plekken naar het team, en het
+/// trainingsblok kan daar ver achter liggen.
 fn training_weeks_header(team: u64) -> Result<u64, String> {
     if let Some((b, d)) = with_state(|s| s.training_block) {
         if mem::u64_at(b) == Some(team) && weeks_at(b + d, d).is_some() {
@@ -897,16 +957,43 @@ fn training_weeks_header(team: u64) -> Result<u64, String> {
         }
     }
     let set: std::collections::HashSet<u64> = [team].into_iter().collect();
-    let hits = mem::scan_u64(&set, 20_000);
-    for d in tb_candidates() {
-        for (a, _) in &hits {
-            if weeks_at(a + d, d).is_some() {
-                with_state(|s| s.training_block = Some((*a, d)));
-                return Ok(a + d);
+    let others: Vec<u64> = tb_candidates().into_iter().filter(|d| *d != TB_WEEKS).collect();
+    let (mut hits, mut found, mut fallback, mut rejected) = (0usize, None, None, Vec::<String>::new());
+    mem::scan_u64_each(&set, &mut |a, _| {
+        hits += 1;
+        // snel voorfilteren: één leesactie voor alle afstanden, alleen een echte lijstkop verder bekijken
+        let Some(buf) = mem::read_bytes(a, 0x90) else { return false };
+        let word = |o: u64| u64::from_le_bytes(buf[o as usize..o as usize + 8].try_into().unwrap());
+        let list_like = |d: u64| {
+            let (b, e) = (word(d), word(d + 8));
+            mem::is_ptr(b) && e > b && (e - b) % 8 == 0
+        };
+        if !list_like(TB_WEEKS) && others.iter().all(|d| !list_like(*d)) {
+            return false;
+        }
+        if list_like(TB_WEEKS) && weeks_at(a + TB_WEEKS, TB_WEEKS).is_some() {
+            found = Some((a, TB_WEEKS));
+            return true;
+        }
+        if rejected.len() < 2 && list_like(TB_WEEKS) {
+            if let Some(why) = weeks_rejection(a + TB_WEEKS) {
+                rejected.push(why);
             }
         }
+        // een andere afstand alleen als reserve: de gemeten 0x28 verderop gaat voor
+        if fallback.is_none() {
+            fallback = others.iter().find(|d| list_like(**d) && weeks_at(a + **d, **d).is_some()).map(|d| (a, *d));
+        }
+        false
+    });
+    if let Some((a, d)) = found.or(fallback) {
+        with_state(|s| s.training_block = Some((a, d)));
+        return Ok(a + d);
     }
-    Err("trainingskalender van het team niet gevonden / training calendar not found".into())
+    let detail = if rejected.is_empty() { String::new() } else { format!("; afgekeurd / rejected: {}", rejected.join(" | ")) };
+    Err(format!(
+        "trainingskalender van het team niet gevonden / training calendar not found (team ×{hits}{detail})"
+    ))
 }
 
 #[derive(Serialize)]
@@ -961,6 +1048,9 @@ pub fn set_week(start: FmDate, days: &[[u16; 3]]) -> Result<usize, String> {
         let old = cur.days[d as usize];
         if old.iter().any(|x| *x == 500 || *x == 402) {
             continue; // wedstrijd of reis: van FM
+        }
+        if old.iter().any(|x| !known_code(*x)) {
+            continue; // iets wat de app niet kent: niet aankomen
         }
         let new = days[d as usize];
         if new.iter().any(|x| *x == 500 || *x == 402 || *x > 600) || new == old {

@@ -488,6 +488,42 @@ fn mac_layout_end_to_end() {
     assert_eq!(ping["untested_writes"], false, "op de geteste Mac-build is geen toestemming nodig");
 }
 
+/// Game Pass (Xbox-app) met een grote club: tienduizenden plekken wijzen naar het team vóór het
+/// trainingsblok, en een dag heeft iets wat de app niet kent (een vlag in het eerste woord en een
+/// leeg vak). De kalender moet toch gevonden worden; die ene dag blijft ongemoeid.
+#[test]
+fn game_pass_big_club_calendar() {
+    let _g = reset(Abi::Msvc);
+    let base = 0x7FF6_0000_0000u64;
+    with(|s| s.images.push(Image { path: r"C:\XboxGames\Football Manager 27\Content\fm_Data\Plugins\x86_64\game_plugin.dll".into(), id: Some("PE-6AE563A1-175DA000".into()), start: base, end: base + 0x175D_A000, segments: Vec::new() }));
+    let w = build_world(&game::WIN, base, 0x5683E08, Some(0x56257C8), 0x28);
+    let ping = call(json!({"cmd": "ping"})).unwrap();
+    assert_eq!(ping["known_build"], true, "Game Pass 0.9.2409.0 is bekend");
+    assert_eq!(call(json!({"cmd": "game_date"})).unwrap(), json!({"year": 2027, "doy": 75}), "datum op de vaste plek van Game Pass");
+
+    let chain = call(json!({"cmd": "chain"})).unwrap();
+    let team = u64::from_str_radix(chain["team"].as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
+    let mut noise = Heap::new(0x1_0000_0000, 30_000 * 16 + 0x200);
+    for _ in 0..30_000 {
+        let a = noise.alloc(16);
+        noise.w64(a, team);
+    }
+    with(|s| s.blocks.insert(0, Block { start: noise.start, data: noise.data, private: true }));
+
+    // woensdag van de eerste week: vlag 1 in het eerste woord, 0xFFFF in het derde vak
+    let wed = w.weeks[0] + 0x10 + 2 * 8;
+    assert!(mem::sys::write_raw(wed, &1u16.to_le_bytes()));
+    assert!(mem::sys::write_raw(wed + 6, &0xFFFFu16.to_le_bytes()));
+
+    let tw = call(json!({"cmd": "training_weeks"})).expect("kalender achter 30.000 verwijzingen");
+    assert_eq!(tw["weeks"].as_array().unwrap().len(), 3);
+    let req = json!({"cmd": "set_week", "start": {"year": 2027, "doy": 74}, "days": vec![[4u16, 5, 1]; 7]});
+    call(req).unwrap();
+    let day = |rec: u64, d: u64| -> Vec<u16> { (0..4).map(|i| mem::u16_at(rec + 0x10 + d * 8 + i * 2).unwrap()).collect() };
+    assert_eq!(day(w.weeks[0], 2), [1, 300, 300, 0xFFFF], "onbekende dag blijft zoals FM hem had");
+    assert_eq!(day(w.weeks[0], 3), [0, 4, 5, 1], "donderdag krijgt het plan");
+}
+
 #[test]
 fn unknown_build_is_read_only() {
     let _g = reset(Abi::Msvc);

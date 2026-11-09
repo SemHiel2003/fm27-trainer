@@ -166,32 +166,40 @@ pub fn heap_regions(exclude: &[(u64, u64)]) -> Vec<Region> {
 
 /// Zoekt 8-byte-uitgelijnde u64-waarden uit `wanted` in de heap; geeft (adres, waarde).
 pub fn scan_u64(wanted: &std::collections::HashSet<u64>, limit: usize) -> Vec<(u64, u64)> {
+    let mut hits = Vec::new();
+    scan_u64_each(wanted, &mut |a, v| {
+        hits.push((a, v));
+        hits.len() >= limit
+    });
+    hits
+}
+
+/// Zoals `scan_u64`, maar zonder limiet: `f(adres, waarde)` per treffer, in adresvolgorde; stopt
+/// zodra `f` true geeft. Een blok dat niet in één keer leesbaar is, wordt in stukken geprobeerd.
+pub fn scan_u64_each(wanted: &std::collections::HashSet<u64>, f: &mut dyn FnMut(u64, u64) -> bool) {
     let (lo, hi) = match (wanted.iter().min(), wanted.iter().max()) {
         (Some(a), Some(b)) => (*a, *b),
-        _ => return Vec::new(),
+        _ => return,
     };
     let images: Vec<(u64, u64)> = images().iter().map(|i| (i.start, i.end)).collect();
-    let mut hits = Vec::new();
-    let mut buf = vec![0u8; 8 << 20];
+    let mut stop = false;
     for r in heap_regions(&images) {
-        let mut a = r.start;
-        while a < r.end {
-            let n = ((r.end - a) as usize).min(buf.len());
-            if read_into(a, &mut buf[..n]) {
-                for (i, c) in buf[..n].chunks_exact(8).enumerate() {
-                    let v = u64::from_le_bytes(c.try_into().unwrap());
-                    if v >= lo && v <= hi && wanted.contains(&v) {
-                        hits.push((a + i as u64 * 8, v));
-                        if hits.len() >= limit {
-                            return hits;
-                        }
-                    }
+        for_each_chunk(r.start, r.end, 8 << 20, 0, &mut |a, buf| {
+            if stop {
+                return;
+            }
+            for (i, c) in buf.chunks_exact(8).enumerate() {
+                let v = u64::from_le_bytes(c.try_into().unwrap());
+                if v >= lo && v <= hi && wanted.contains(&v) && f(a + i as u64 * 8, v) {
+                    stop = true;
+                    return;
                 }
             }
-            a += n as u64;
+        });
+        if stop {
+            return;
         }
     }
-    hits
 }
 
 /// Zoekt een bytepatroon (met uitlijning `align`) in de heap.

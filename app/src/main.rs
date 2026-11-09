@@ -55,7 +55,8 @@ fn save_effectiveness(e: &Effectiveness) -> Result<()> {
 
 fn print_analysis(a: &vision::Analysis) {
     for g in &a.gauges {
-        println!("{:<36} {:>5.1}  ({})", g.factor.label(), g.score, model::level_name(g.score));
+        let doubt = if g.doubt { format!("  ?? vulling {:.0} % past niet bij tint {:.0}°", g.fill * 100.0, g.hue) } else { String::new() };
+        println!("{:<36} {:>5.1}  ({}){doubt}", g.factor.label(), g.score, model::level_name(g.score));
     }
     for (c, v) in &a.components {
         println!("[{}] {:.1}", c.label(), v);

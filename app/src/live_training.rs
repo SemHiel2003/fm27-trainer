@@ -158,7 +158,8 @@ pub fn run(eff: &Effectiveness, settings: &PlannerSettings, write: bool, skip: &
         let mut editable = [false; 7];
         for d in 0..7 {
             let date = *start + Duration::days(d as i64);
-            editable[d] = date > today && !is_match_or_travel(&cur[d]);
+            // een code die de app niet kent (leeg vak, nieuw soort dag) laat de module ook ongemoeid
+            editable[d] = date > today && !is_match_or_travel(&cur[d]) && cur[d].iter().all(|c| *c <= 600);
             if !editable[d] {
                 continue;
             }

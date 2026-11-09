@@ -268,7 +268,8 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
         "find_ptr" => {
             let target = addr(req, "target")?;
             let set: std::collections::HashSet<u64> = [target].into_iter().collect();
-            let hits = mem::scan_u64(&set, 200);
+            let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(200).clamp(1, 1_000_000) as usize;
+            let hits = mem::scan_u64(&set, limit);
             Ok(json!(hits.iter().map(|(a, _)| format!("{a:#x}")).collect::<Vec<_>>()))
         }
         "write" => {

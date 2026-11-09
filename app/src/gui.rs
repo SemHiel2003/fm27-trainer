@@ -272,8 +272,17 @@ impl App {
                         }
                     }
                     let _ = crate::save_effectiveness(&self.eff);
-                    let msg = t!(format!("{} van 17 meters gelezen.", a.gauges.len()), format!("Read {} of 17 gauges.", a.gauges.len()));
-                    self.set_status(msg, false);
+                    let mut msg = t!(format!("{} van 17 meters gelezen.", a.gauges.len()), format!("Read {} of 17 gauges.", a.gauges.len())).to_string();
+                    // een meting die niet bij de kleur van de meter past: laten nakijken
+                    let doubts: Vec<&str> = a.gauges.iter().filter(|g| g.doubt).map(|g| g.factor.label()).collect();
+                    if !doubts.is_empty() {
+                        msg.push(' ');
+                        msg.push_str(&t!(
+                            format!("Kijk na (kleur en vulling kloppen niet): {}. Pas aan met 'Waarden handmatig aanpassen'.", doubts.join(", ")),
+                            format!("Please check (colour and fill disagree): {}. Fix them with 'Adjust values manually'.", doubts.join(", "))
+                        ));
+                    }
+                    self.set_status(msg, !doubts.is_empty());
                     self.week_plan = None;
                     self.year.clear();
                 }
@@ -393,7 +402,7 @@ impl App {
             ui.add_space(10.0);
             let steps = if windows {
                 [
-                    (1, t!("Start FM27 (via Steam of met de knop hieronder).", "Start FM27 (through Steam or with the button below).")),
+                    (1, t!("Start FM27 op de pc: Steam (of de knop hieronder), Xbox-app / Game Pass of Epic.", "Start FM27 on your PC: Steam (or the button below), the Xbox app / Game Pass or Epic.")),
                     (2, t!("Laad je save.", "Load your save.")),
                     (3, t!("De app verbindt vanzelf.", "The app connects automatically.")),
                 ]
@@ -1763,8 +1772,8 @@ impl App {
                     ui.label(RichText::new(t!("Aanpassen op een niet-geteste FM-versie", "Allow changes on an untested FM build")).strong());
                 });
                 ui.add(egui::Label::new(theme::dim(t!(
-                    "FM27 Trainer past alleen iets aan op FM-versies waarop het live getest is. Op andere versies (de Windows-versie, of na een FM-update) staat de app op alleen lezen. Kloppen club, budget en selectie in de app met wat FM laat zien? Dan kun je aanpassen hier toestaan. Elke wijziging wordt eerst gecontroleerd, kan ongedaan worden gemaakt en blijft pas bewaard als je in FM opslaat. Maak eerst een backup van je save.",
-                    "FM27 Trainer only changes things on FM builds it has been tested on live. On other builds (the Windows version, or after an FM update) the app is read-only. Do club, budget and squad in the app match what FM shows? Then you can allow changes here. Every change is checked first, can be undone and only sticks once you save in FM. Back up your save first."
+                    "FM27 Trainer past alleen iets aan op FM-versies die het kent (Steam op Windows en Mac, Game Pass / Xbox-app op Windows). Op andere versies (na een FM-update, of bijvoorbeeld Epic) staat de app op alleen lezen. Kloppen club, budget en selectie in de app met wat FM laat zien? Dan kun je aanpassen hier toestaan. Elke wijziging wordt eerst gecontroleerd, kan ongedaan worden gemaakt en blijft pas bewaard als je in FM opslaat. Maak eerst een backup van je save.",
+                    "FM27 Trainer only changes things on FM builds it knows (Steam on Windows and Mac, Game Pass / Xbox app on Windows). On other builds (after an FM update, or Epic for example) the app is read-only. Do club, budget and squad in the app match what FM shows? Then you can allow changes here. Every change is checked first, can be undone and only sticks once you save in FM. Back up your save first."
                 )))
                 .wrap());
                 if self.live.connected {
@@ -1794,6 +1803,12 @@ impl App {
                 if theme::button(ui, icon::EXPORT, t!("Open exportmap", "Open export folder"), true).clicked() {
                     let _ = std::fs::create_dir_all(export::output_dir());
                     open_path(&export::output_dir());
+                }
+                // daar staat ook de laatste schermopname (last-breakdown.png): handig om mee te sturen
+                // als een meter verkeerd gelezen wordt
+                if theme::button(ui, icon::EXPORT, t!("Open app-map (laatste schermopname)", "Open app folder (last screenshot)"), true).clicked() {
+                    let _ = std::fs::create_dir_all(crate::data_dir());
+                    open_path(&crate::data_dir());
                 }
                 if cfg!(target_os = "macos") && theme::button(ui, icon::CAMERA, t!("Schermopname-toestemming", "Screen Recording permission"), true).clicked() {
                     open_path(std::path::Path::new("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"));
