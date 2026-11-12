@@ -164,7 +164,162 @@ pub const BUILDS: &[Build] = &[
     // gelijk, alleen de vaste plekken liggen anders. Niet door dit project live getest; aanpassen staat
     // aan omdat elke keten en lijst vóór het schrijven op dezelfde manier gecontroleerd wordt als op Steam.
     Build { id: "PE-6AE563A1-175DA000", label: "Game Pass 0.9.2409.0 Windows", writes_tested: true, current_date: 0x56257C8, staff: 0x5683E08, clubs: 0x5683F78 },
+    // ---- 27.0.1, de volledige release van 10 nov 2026, en de update van 12 nov 2026 ----
+    // Vaste plekken uit FMLibreEditor (steam-26385295*.toml, steam-26577676*.toml, gamepass-0.9.2435.0.toml);
+    // volgens hun metingen is de objectindeling gelijk gebleven (dezelfde save las veld voor veld hetzelfde).
+    // Windows: aanpassen staat aan op grond van die meting (besluit van Sem, 12 nov 2026; live test op Windows
+    // volgt), zoals eerder bij Game Pass 0.9.2409.0: elke keten en lijst wordt vóór het schrijven gecontroleerd.
+    // Mac arm64 26577676: live getest op 12 nov 2026 (Ajax-save, juli 2027): lezen, budget, moraal, training,
+    // elk met undo; verkopen en kopen als controle (dry run). De andere Mac-builds: niet getest.
+    Build { id: "2A2D0ED6-324E-3D0D-A27D-10AEDBD0E270", label: "Steam 26385295 macOS arm64", writes_tested: false, current_date: 0x574DDB8, staff: 0x576EE98, clubs: 0x576F008 },
+    Build { id: "A8550B47-FDE0-3D0D-A6CB-1B63DEE8DA19", label: "Steam 26577676 macOS arm64", writes_tested: true, current_date: 0x574DDB8, staff: 0x576EE98, clubs: 0x576F008 },
+    Build { id: "PE-6AE8B5A4-17CB9000", label: "Steam 26385295 Windows", writes_tested: true, current_date: 0x57CA3B8, staff: 0x5820858, clubs: 0x58209C8 },
+    Build { id: "PE-6AF38E5C-185FA000", label: "Steam 26577676 Windows", writes_tested: true, current_date: 0x57CA3B8, staff: 0x5820858, clubs: 0x58209C8 },
+    Build { id: "PE-6AE8CF77-17969000", label: "Game Pass 0.9.2435.0 Windows", writes_tested: true, current_date: 0x53597C8, staff: 0x53B7E28, clubs: 0x53B7F98 },
+    // Intel-helft van de Mac-versie (Intel-Macs, of Apple silicon onder Rosetta): nooit door dit project getest
+    Build { id: "0981AB31-AC3B-3D93-944F-47FE4B59CD9E", label: "Steam 26340721 macOS Intel", writes_tested: false, current_date: 0x5C69700, staff: 0x5C89210, clubs: 0x5C89380 },
+    Build { id: "94CDDC80-8474-327A-85E0-E4FF95DC6893", label: "Steam 26385295 macOS Intel", writes_tested: false, current_date: 0x5CE3700, staff: 0x5D03230, clubs: 0x5D033A0 },
+    Build { id: "DD0EE157-4C9C-31A7-81DD-0D1122E62FC7", label: "Steam 26577676 macOS Intel", writes_tested: false, current_date: 0x5CE3700, staff: 0x5D03230, clubs: 0x5D033A0 },
 ];
+
+/// In elke build die gemeten is (11 profielen, drie platforms) staat het paar van de clublijst
+/// precies zo ver achter dat van de staflijst.
+const STAFF_TO_CLUBS: u64 = 0x170;
+
+/// De vaste plekken van de geladen game_plugin, als adressen: uit het profiel van de build, of
+/// (onbekende build, na een FM-patch) zelf opgezocht.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Statics {
+    pub staff: u64,
+    pub clubs: u64,
+    pub date: Option<u64>,
+    /// zelf opgezocht in plaats van uit een profiel
+    pub discovered: bool,
+}
+
+pub(crate) fn statics(img: &mem::Image) -> Option<Statics> {
+    if let Some(b) = profile(img.id.as_deref()) {
+        return Some(Statics { staff: img.start + b.staff, clubs: img.start + b.clubs, date: Some(img.start + b.current_date), discovered: false });
+    }
+    if let Some((base, st)) = with_state(|s| s.discovered) {
+        if base == img.start {
+            return Some(st);
+        }
+    }
+    // zonder geladen save is er niets te vinden: niet bij elke verbindingscontrole het hele image lezen
+    let now = std::time::Instant::now();
+    let wait = with_state(|s| s.discover_failed.is_some_and(|t| now.duration_since(t).as_secs() < 20));
+    if wait {
+        return None;
+    }
+    match discover(img) {
+        Some(st) => {
+            with_state(|s| s.discovered = Some((img.start, st)));
+            Some(st)
+        }
+        None => {
+            with_state(|s| s.discover_failed = Some(now));
+            None
+        }
+    }
+}
+
+/// Een (begin, end)-paar van een lijst pointers.
+fn ptr_pair(b: u64, e: u64) -> bool {
+    mem::is_ptr(b) && mem::is_ptr(e) && e > b && (e - b) % 8 == 0 && (e - b) / 8 <= 400_000
+}
+
+fn read_ptr_list(pair: u64) -> Option<Vec<u64>> {
+    let (b, e) = (mem::u64_at(pair)?, mem::u64_at(pair + 8)?);
+    if !ptr_pair(b, e) {
+        return None;
+    }
+    let bytes = mem::read_bytes(b, (e - b) as usize)?;
+    Some(bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect())
+}
+
+/// Zoekt de staf- en clublijst in een build zonder profiel: twee (begin, end)-paren op de vaste
+/// onderlinge afstand, waarvan het tweede clubs bevat (UID + naam) en het eerste een manager wiens
+/// keten (contract → team → club → financiën) klopt en bij een club uit die lijst uitkomt.
+fn discover(img: &mem::Image) -> Option<Statics> {
+    let span = STAFF_TO_CLUBS as usize + 16;
+    // (kleinste van beide lijsten, adres van het staf-paar)
+    let mut cands: Vec<(u64, u64)> = Vec::new();
+    mem::for_each_chunk(img.start, img.end, 8 << 20, span, &mut |a, buf| {
+        if buf.len() < span {
+            return;
+        }
+        let w = |i: usize| u64::from_le_bytes(buf[i..i + 8].try_into().unwrap());
+        let mut i = (8 - (a % 8) as usize) % 8;
+        while i + span <= buf.len() {
+            let (b, e) = (w(i), w(i + 8));
+            if b != 0 && ptr_pair(b, e) {
+                let c = i + STAFF_TO_CLUBS as usize;
+                let (cb, ce) = (w(c), w(c + 8));
+                if ptr_pair(cb, ce) {
+                    cands.push(((e - b).min(ce - cb) / 8, a + i as u64));
+                }
+            }
+            i += 8;
+        }
+    });
+    // Gemeten op de Mac (build 26577676, 12 nov 2026): 1.945 zulke dubbele paren in __DATA, het echte
+    // (21.852 stafleden, 22.141 clubs) op één na het grootste. De grootste dus eerst, en niet eindeloos.
+    cands.sort_unstable_by(|x, y| y.cmp(x));
+    cands.dedup();
+    cands.truncate(512);
+    for (_, staff) in cands {
+        let clubs = staff + STAFF_TO_CLUBS;
+        let Some(club_list) = read_ptr_list(clubs) else { continue };
+        let sample: Vec<u64> = club_list.iter().copied().filter(|p| mem::is_ptr(*p)).take(32).collect();
+        let named = sample.iter().filter(|c| club_name(**c).is_some() && mem::u32_at(**c + CLUB_UID).is_some_and(|u| u != 0)).count();
+        if sample.is_empty() || named * 2 < sample.len() {
+            continue;
+        }
+        let Some(staff_list) = read_ptr_list(staff) else { continue };
+        let Some(chain) = staff_list.into_iter().filter(|p| mem::is_ptr(*p)).find_map(check_chain) else { continue };
+        if !club_list.contains(&chain.club) {
+            continue;
+        }
+        let date = discover_date(img, staff, &chain);
+        return Some(Statics { staff, clubs, date, discovered: true });
+    }
+    None
+}
+
+/// De plek van de spel-datum in een build zonder profiel. De datum is een eigen variabele een
+/// stuk vóór de lijsten; de afstand tot de staflijst verschuift per patch hooguit een paar
+/// honderd bytes (Steam Windows: drie builds gelijk; Mac arm64 0x38; Game Pass 0x20). Gezocht
+/// wordt dus rond de afstanden van de bekende builds van hetzelfde platform, en de waarde moet
+/// een datum zijn die past bij de datum van het team (rond de laatste wedstrijd: niet later, en
+/// hooguit een half jaar eerder). Niets gevonden: None, dan geldt de datum van het team.
+/// Gemeten op de Mac (build 26577676): 21 datum-achtige waarden in __DATA, waarvan precies één
+/// binnen 0x400 van een bekende afstand; de spel-datum heeft vlagbits boven de dag (0x19).
+fn discover_date(img: &mem::Image, staff: u64, chain: &Chain) -> Option<u64> {
+    let windows = mem::abi() == Abi::Msvc;
+    let ord = |d: FmDate| d.year as i64 * 366 + d.doy as i64;
+    let team = date_via_team(chain.team).filter(|d| d.year >= 2000).map(ord);
+    let fits = |a: u64| -> bool {
+        let Some(d) = FmDate::read(a).filter(|d| (2020..=2150).contains(&d.year)) else { return false };
+        team.is_none_or(|t| ord(d) >= t && ord(d) - t <= 200)
+    };
+    let mut best: Option<(u64, u64)> = None; // (afwijking, adres)
+    for b in BUILDS.iter().filter(|b| b.id.starts_with("PE-") == windows) {
+        let dist = b.staff - b.current_date;
+        let Some(center) = staff.checked_sub(dist).filter(|c| *c >= img.start) else { continue };
+        for step in 0..=0x100u64 {
+            for a in [center.wrapping_sub(step * 4), center + step * 4] {
+                if a >= img.start && a + 4 <= staff && fits(a) && best.is_none_or(|(d, _)| step * 4 < d) {
+                    best = Some((step * 4, a));
+                }
+            }
+            if best.is_some_and(|(d, _)| d <= step * 4) {
+                break;
+            }
+        }
+    }
+    best.map(|(_, a)| a)
+}
 
 /// Aanpassen toestaan op een build die (nog) niet live getest is; de gebruiker zet dit zelf aan.
 static ALLOW_UNTESTED: AtomicBool = AtomicBool::new(false);
@@ -211,6 +366,9 @@ struct State {
     training_block: Option<(u64, u64)>,
     human_vtables: Vec<u64>,
     undo: Vec<Change>,
+    /// (begin van game_plugin, de zelf opgezochte vaste plekken) op een build zonder profiel
+    discovered: Option<(u64, Statics)>,
+    discover_failed: Option<std::time::Instant>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -225,6 +383,41 @@ pub fn build() -> (Option<String>, bool) {
     let id = mem::game_plugin().and_then(|i| i.id);
     let tested = profile(id.as_deref()).is_some_and(|b| b.writes_tested);
     (id, tested)
+}
+
+/// Onderzoek: zoekt de vaste plekken zoals op een onbekende build, ook als de build bekend is, om de
+/// uitkomst met het profiel te vergelijken. Geeft RVA's en de duur.
+pub fn discover_report() -> Result<serde_json::Value, String> {
+    let img = mem::game_plugin().ok_or("game_plugin niet geladen / not loaded")?;
+    let t = std::time::Instant::now();
+    let found = discover(&img);
+    let ms = t.elapsed().as_millis() as u64;
+    let rva = |a: u64| format!("{:#x}", a - img.start);
+    let prof = profile(img.id.as_deref());
+    Ok(serde_json::json!({
+        "ms": ms,
+        "found": found.map(|s| serde_json::json!({"staff": rva(s.staff), "clubs": rva(s.clubs), "date": s.date.map(rva)})),
+        "profile": prof.map(|b| serde_json::json!({"staff": format!("{:#x}", b.staff), "clubs": format!("{:#x}", b.clubs), "date": format!("{:#x}", b.current_date)})),
+        "same": match (found, prof) {
+            (Some(s), Some(b)) => Some(s.staff == img.start + b.staff && s.clubs == img.start + b.clubs && s.date == Some(img.start + b.current_date)),
+            _ => None,
+        },
+    }))
+}
+
+/// De naam van de build als hij bekend is ("Steam 26577676 Windows").
+pub fn build_label() -> Option<&'static str> {
+    let id = mem::game_plugin().and_then(|i| i.id);
+    profile(id.as_deref()).map(|b| b.label)
+}
+
+/// "profile", "discovered" of None: zonder te zoeken (dat doet de eerste echte opdracht).
+pub fn statics_source() -> Option<&'static str> {
+    let img = mem::game_plugin()?;
+    if profile(img.id.as_deref()).is_some() {
+        return Some("profile");
+    }
+    with_state(|s| s.discovered).filter(|(base, _)| *base == img.start).map(|_| "discovered")
 }
 
 /// Wordt gebruikt na het opnieuw verbinden met FM (Windows): alles wat onthouden is, is weg.
@@ -372,10 +565,9 @@ fn human_via_rtti(img: &mem::Image) -> Option<Chain> {
     rtti::instances(&vts, 64).into_iter().find_map(check_chain)
 }
 
-/// Zoekt de manager in de staflijst van het spel (vaste plek per build).
+/// Zoekt de manager in de staflijst van het spel (vaste plek per build, of zelf opgezocht).
 fn human_via_staff(img: &mem::Image) -> Option<Chain> {
-    let b = profile(img.id.as_deref())?;
-    let pair = img.start + b.staff;
+    let pair = statics(img)?.staff;
     let (begin, end) = (mem::u64_at(pair)?, mem::u64_at(pair + 8)?);
     if !mem::is_ptr(begin) || end < begin || (end - begin) % 8 != 0 || (end - begin) / 8 > 400_000 {
         return None;
@@ -840,8 +1032,7 @@ fn date_via_team(team: u64) -> Option<FmDate> {
 /// De spel-datum op zijn vaste plek in game_plugin (per build, FMLibreEditor).
 fn date_via_static() -> Option<FmDate> {
     let img = mem::game_plugin()?;
-    let b = profile(img.id.as_deref())?;
-    FmDate::read(img.start + b.current_date).filter(|d| d.year >= 2000)
+    FmDate::read(statics(&img)?.date?).filter(|d| d.year >= 2000)
 }
 
 pub fn game_date() -> Result<FmDate, String> {

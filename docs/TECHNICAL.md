@@ -40,6 +40,25 @@ simulated memory for tests), `rtti.rs` (Itanium and MSVC RTTI) and `game.rs` (la
   (linked 526 s earlier) with the same object layout; only the statics moved (staff `0x5683E08`, clubs
   `0x5683F78`, date `0x56257C8`, from FMLibreEditor's `gamepass-0.9.2409.0.toml`). Its process is `fm.exe` too,
   run from the package's `Content` folder, and opens with the same rights.
+- Builds after the release (all from FMLibreEditor's profiles, object layout unchanged; `BUILDS` in
+  `agent/src/game.rs`): Steam 26385295 (10 Nov 2026, `PE-6AE8B5A4-17CB9000`) and 26577676 (12 Nov,
+  `PE-6AF38E5C-185FA000`) share staff `0x5820858`, clubs `0x58209C8`, date `0x57CA3B8`; Game Pass 0.9.2435.0
+  (`PE-6AE8CF77-17969000`) has staff `0x53B7E28`, clubs `0x53B7F98`, date `0x53597C8`; macOS arm64 26385295
+  (`2A2D0ED6-…`) and 26577676 (`A8550B47-…`) share staff `0x576EE98`, clubs `0x576F008`, date `0x574DDB8`; the
+  Intel halves are listed too. macOS arm64 26577676 was live-tested on 12 Nov 2026 (reads; budget, morale, one
+  training day, each with undo; sell/buy as dry runs). The Windows builds have writes on by FMLibreEditor's
+  finding that the object layout is unchanged (not live-tested by this project yet); 26385295 on the Mac and the
+  Intel halves are read-only until allowed.
+- **Unknown build** (after a patch): `game::statics` looks the statics up itself (`discover`). In all 11 measured
+  profiles the clubs pair sits `0x170` after the staff pair, so it scans the image for two pointer-list pairs at
+  that distance, where the second holds clubs (name readable) and the first holds a manager whose chain
+  (contract → team → club → finances) checks out and ends at a club of that list. The date is searched within
+  `0x400` of the distances the known builds of the same platform have between date and staff list, and must fit the
+  team's date (not earlier, at most 200 days later); otherwise the team's date is used as before. A failed search
+  is retried at most every 20 s. Measured on the Mac (26577676): 1,945 such double pairs in `__DATA` (the largest
+  are tried first; the real one holds 21,852 staff and 22,141 clubs) and 21 date-like values, exactly one within
+  `0x400` of a known distance; the game date carries flag bits above the day. The research command `discover` runs
+  the search on a known build and compares with the profile. `ping` reports `statics: "profile" | "discovered" | null`.
 - The human manager is found in the game's staff array (the `(begin, end)` pair at RVA `0x5705818`), with MSVC
   RTTI as a fallback: `[vtable-8]` is the Complete Object Locator, whose TypeDescriptor holds
   `.?AVHUMAN_NON_PLAYER@db@@`. The in-game date is at RVA `0x56AF378`.

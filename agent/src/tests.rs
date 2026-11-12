@@ -930,6 +930,8 @@ fn run_market(l: &'static Layout, m: &Market) {
     // verkopen
     let req = json!({"cmd": "sell", "uid": 37058888, "club": 45, "fee": 10_000_000, "wage": 30_000});
     if call(json!({"cmd": "ping"})).unwrap()["known_build"] == false {
+        // voor de aankoop hierboven stond aanpassen al aan: eerst weer uit
+        call(json!({"cmd": "allow_untested", "on": false})).unwrap();
         assert!(err(req.clone()).contains("alleen lezen"));
         assert!(snapshot() == before);
         call(json!({"cmd": "allow_untested", "on": true})).unwrap();
@@ -995,4 +997,59 @@ fn sell_on_windows() {
     with(|s| s.images.push(Image { path: r"C:\fm\game_plugin.dll".into(), id: Some("PE-6AE565AF-1821C000".into()), start: base, end: base + 0x1821_C000, segments: Vec::new() }));
     let m = build_market(Abi::Msvc, &game::WIN, base, 0x5705818, 0x5705988, Some(0x56AF378));
     run_market(&game::WIN, &m);
+}
+
+/// Een build die de app niet kent (na een FM-patch): de staf- en clublijst en de datum worden
+/// zelf opgezocht, zodat de app verbindt; aanpassen blijft uit tot de gebruiker het toestaat.
+fn unknown_build_discovers(abi: Abi, l: &'static Layout, base: u64, id: &str, staff_rva: u64, date_rva: u64) {
+    with(|s| s.images.push(Image { path: "/x/game_plugin.dll".into(), id: Some(id.into()), start: base, end: base + 0x1900_0000, segments: Vec::new() }));
+    let m = build_market(abi, l, base, staff_rva, staff_rva + 0x170, Some(date_rva));
+    // de vaste datum is een andere dan die van het team (dag 76): zo is te zien welke gelezen wordt
+    assert!(mem::sys::write_raw(base + date_rva, &date_bytes(2027, 80)));
+    // een datum die niet bij het team past, dichter bij de verwachte plek: mag niet gekozen worden
+    assert!(mem::sys::write_raw(base + date_rva + 8, &date_bytes(2031, 12)));
+
+    let ping = call(json!({"cmd": "ping"})).unwrap();
+    assert_eq!(ping["known_build"], false);
+    assert_eq!(call(json!({"cmd": "club"})).unwrap()["name"], "AFC Ajax");
+    assert_eq!(call(json!({"cmd": "game_date"})).unwrap(), json!({"year": 2027, "doy": 80}));
+    let err = call(json!({"cmd": "set_finances", "transfer_budget": 1})).unwrap_err();
+    assert!(err.contains("getest") || err.contains("tested"), "onbekende build is alleen lezen: {err}");
+    assert_eq!(call(json!({"cmd": "ping"})).unwrap()["statics"], "discovered");
+    call(json!({"cmd": "allow_untested", "on": true})).unwrap();
+    assert!(mem::sys::write_raw(base + date_rva, &date_bytes(2027, 76)));
+    run_market(l, &m);
+}
+
+#[test]
+fn unknown_windows_build_discovers_lists() {
+    let _g = reset(Abi::Msvc);
+    // Steam Windows houdt de datum 0x564A0 vóór de staflijst; hier 0x40 verschoven
+    unknown_build_discovers(Abi::Msvc, &game::WIN, 0x7FF6_0000_0000, "PE-7A000000-19000000", 0x5911858, 0x5911858 - 0x564A0 - 0x40);
+}
+
+#[test]
+fn unknown_mac_build_discovers_lists() {
+    let _g = reset(Abi::Itanium);
+    unknown_build_discovers(Abi::Itanium, &game::MAC, 0x1_2000_0000, "00000000-0000-0000-0000-000000000001", 0x5811E98, 0x5811E98 - 0x210E0 + 0x38);
+}
+
+/// De builds van 10 en 12 november 2026 zijn bekend, op hun eigen vaste plekken.
+#[test]
+fn november_builds_are_known() {
+    for (abi, l, base, id, staff, date) in [
+        (Abi::Msvc, &game::WIN, 0x7FF6_0000_0000u64, "PE-6AF38E5C-185FA000", 0x5820858u64, 0x57CA3B8u64),
+        (Abi::Msvc, &game::WIN, 0x7FF6_0000_0000, "PE-6AE8B5A4-17CB9000", 0x5820858, 0x57CA3B8),
+        (Abi::Msvc, &game::WIN, 0x7FF6_0000_0000, "PE-6AE8CF77-17969000", 0x53B7E28, 0x53597C8),
+        (Abi::Itanium, &game::MAC, 0x1_2000_0000, "A8550B47-FDE0-3D0D-A6CB-1B63DEE8DA19", 0x576EE98, 0x574DDB8),
+        (Abi::Itanium, &game::MAC, 0x1_2000_0000, "2A2D0ED6-324E-3D0D-A27D-10AEDBD0E270", 0x576EE98, 0x574DDB8),
+    ] {
+        let _g = reset(abi);
+        with(|s| s.images.push(Image { path: "/x/game_plugin.dll".into(), id: Some(id.into()), start: base, end: base + 0x1900_0000, segments: Vec::new() }));
+        let m = build_market(abi, l, base, staff, staff + 0x170, Some(date));
+        assert_eq!(call(json!({"cmd": "ping"})).unwrap()["statics"], "profile", "{id}");
+        assert_eq!(call(json!({"cmd": "game_date"})).unwrap(), json!({"year": 2027, "doy": 76}), "{id}");
+        call(json!({"cmd": "allow_untested", "on": true})).unwrap();
+        run_market(l, &m);
+    }
 }

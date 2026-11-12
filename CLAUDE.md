@@ -53,13 +53,13 @@ Alle opdrachten van de module: `ping`, `club`, `squad`, `set_finances`, `heal`, 
 `game_date`, `training_weeks`, `set_week`, `clubs`, `club_squad`, `sell`, `buy`, `understanding`, `max_understanding` (met `dry_run`),
 `human_flags`, `set_human_flags`,
 `allow_untested`, en voor onderzoek `chain`, `census`, `class_of`, `read`, `find_u16`, `find_ptr`, `write` (alleen
-met `expect`). Zie `agent/src/lib.rs`.
+met `expect`), `discover`. Zie `agent/src/lib.rs`.
 
 ## Bouwen en testen op Windows
 
 - Rust stable met de MSVC-toolchain (`rustup default stable-x86_64-pc-windows-msvc`) en Visual Studio Build Tools
   (workload "Desktop development with C++").
-- `cargo test -p fm27-agent`: 8 tests, `cargo test -p fm27-trainer`: 3 tests (nagemaakte taartmeters); horen allemaal te slagen.
+- `cargo test -p fm27-agent`: 11 tests, `cargo test -p fm27-trainer`: 3 tests (nagemaakte taartmeters); horen allemaal te slagen.
 - `cargo run -p fm27-trainer`: de app. `cargo build --release -p fm27-trainer` → `target\release\fm27-trainer.exe`
   (statische C-runtime via `.cargo/config.toml`).
 - **De release-exe heeft geen console** (`windows_subsystem = "windows"`). Gebruik voor de CLI de debug-build:
@@ -83,6 +83,23 @@ met `expect`). Zie `agent/src/lib.rs`.
   objectindeling; vaste plekken uit FMLibreEditor `profiles/fm27/gamepass-0.9.2409.0.toml`; schrijven staat aan,
   **niet door ons live getest**). Onbekende build → geen vaste adressen (staflijst, clublijst, datum).
   Game Pass draait ook als `fm.exe` (uit `...\Content\`); een Xbox-console kan de app niet lezen.
+- **Builds na de release** (12 nov 2026, na meldingen "not connected" op sortitoutsi en GitHub #1/#2; alle vaste
+  plekken uit FMLibreEditor `profiles/fm27/`, objectindeling volgens hen ongewijzigd): Steam 26385295 (10 nov) =
+  `PE-6AE8B5A4-17CB9000` en 26577676 (12 nov) = `PE-6AF38E5C-185FA000`, beide staf 0x5820858, clubs 0x58209C8, datum
+  0x57CA3B8; Game Pass 0.9.2435.0 = `PE-6AE8CF77-17969000`, staf 0x53B7E28, clubs 0x53B7F98, datum 0x53597C8; Mac
+  arm64 26385295 (`2A2D0ED6-…`) en 26577676 (`A8550B47-FDE0-3D0D-A6CB-1B63DEE8DA19`), beide staf 0x576EE98, clubs
+  0x576F008, datum 0x574DDB8; de Intel-helften staan ook in `BUILDS`. Schrijven: Mac arm64 26577676 **live getest**
+  (12 nov 2026); de drie Windows-builds staan aan **op grond van FMLibreEditor's meting** (besluit van Sem; hij test
+  Windows zelf na); Mac 26385295 en Intel: alleen lezen.
+- **Onbekende build** (`game::statics` → `discover`): de app zoekt de lijsten zelf. Het clubpaar staat in alle 11
+  gemeten profielen 0x170 achter het stafpaar; gezocht wordt naar twee pointerlijst-paren op die afstand (grootste
+  eerst) waarvan het tweede clubs bevat en het eerste een manager met kloppende keten die bij een club uit die lijst
+  uitkomt. Datum: binnen 0x400 van de afstand datum↔staflijst van de bekende builds van hetzelfde platform, passend
+  bij de teamdatum; anders de teamdatum zoals vroeger. Schrijven blijft dan uit tot `allow_untested`. Gemeten op de
+  Mac: 1.945 dubbele paren in `__DATA`, 21 datum-achtige waarden, precies één binnen 0x400; de spel-datum heeft
+  vlagbits boven de dag (0x19). Onderzoeksopdracht `discover` vergelijkt de zoektocht met het profiel; `ping` geeft
+  `statics: profile|discovered|null` en `build_label`. Bij een nieuwe patch: profiel uit FMLibreEditor overnemen in
+  `BUILDS` en de procedure van Taak 1 doen.
 - **Schrijven staat op Windows aan** voor Steam-build 26340721 (`writes_tested: true` in `BUILDS`,
   `agent/src/game.rs`; live gecontroleerd op 8 nov 2026). Op een onbekende build (na een FM-patch) staat de app op
   alleen lezen; de gebruiker kan het per sessie toestaan (Instellingen → "Aanpassen op een niet-geteste FM-versie" →
@@ -195,6 +212,13 @@ via `read` uit fm.exe komt; game_plugin.dll ligt op Windows ingepakt op schijf m
 | tactisch begrip (`understanding`, `max_understanding`) | alleen simulatie (offset 0xF8 is een gok) | ✅ gelezen en gemaximaliseerd (8 nov 2026) |
 | MSVC-RTTI | n.v.t. | ✅ testdata én live (census, opstellingen) |
 | Game Pass / Xbox-app (0.9.2409.0) | n.v.t. | alleen simulatie (build, datum, staflijst, kalender); posities van FMLibreEditor |
+
+Mac arm64, Steam-build 26577676 (12 nov 2026, Ajax-save 25 juli 2027, `scratchpad/livetest.py`-achtige reeks via
+`fm27-trainer agent`): club, selectie (30), kalender (108 weken), clubs, tactisch begrip (offset 0xF8 leest
+plausibele waarden), datum ✅; `set_finances` +1, `inspire` (17→20), `set_week` (één dag), elk met `undo` en exact
+terug ✅; `heal` zonder geblesseerden (niets te doen); `sell`/`buy`/`max_understanding` alleen `dry_run`. Windows
+op de nieuwe builds: **nog niet live getest**. Dezelfde reeks is herhaald met de release-binaries van 0.2.4; de
+opdracht `discover` vond daar in 64 ms exact de adressen van het profiel (`same: true`).
 
 ## Taak 1: Windows live controleren — gedaan (8 nov 2026)
 

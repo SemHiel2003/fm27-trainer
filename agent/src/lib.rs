@@ -159,6 +159,10 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
                 "version": VERSION,
                 "build": id,
                 "known_build": tested,
+                "build_label": game::build_label(),
+                // waar de vaste plekken vandaan komen: "profile" (bekende build), "discovered"
+                // (zelf opgezocht op een onbekende build) of null (nog niets gevonden)
+                "statics": game::statics_source(),
                 "platform": if mem::abi() == mem::Abi::Msvc { "windows" } else { "macos" },
                 "untested_writes": game::allow_untested(),
             }))
@@ -220,6 +224,7 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
         "chain" => game::chain().map(|c| {
             json!({"human": format!("{:#x}", c.human), "contract": format!("{:#x}", c.contract), "team": format!("{:#x}", c.team), "club": format!("{:#x}", c.club), "finance": format!("{:#x}", c.finance)})
         }),
+        "discover" => game::discover_report(),
         "census" => {
             let img = mem::game_plugin().ok_or("game_plugin niet geladen")?;
             let filter = req.get("filter").and_then(|v| v.as_str()).unwrap_or("TRAIN");

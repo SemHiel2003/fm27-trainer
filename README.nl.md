@@ -71,8 +71,10 @@ in FM's trainingskalender, week na week.
    hoeft niets geïnstalleerd of meegestart te worden.
 
 > Live getest op de Steam-build van november 2026 (26340721): uitlezen, budget, moraal, blessures, training en
-> verkopen, elk met ongedaan maken. Na een FM-patch staat de app op alleen lezen tot de nieuwe build is
-> gecontroleerd; aanpassen kun je dan zelf toestaan in Instellingen (maak eerst een backup van je save).
+> verkopen, elk met ongedaan maken. De volledige release van 10 november en de update van 12 november (Steam
+> 26385295 en 26577676, Game Pass 0.9.2435.0) worden ook herkend. Na een FM-patch blijft de app lezen (hij zoekt
+> de lijsten van de game zelf op) maar staat hij op alleen lezen tot de nieuwe build is gecontroleerd; aanpassen
+> kun je dan zelf toestaan in Instellingen (maak eerst een backup van je save).
 
 ## Hoe het werkt
 

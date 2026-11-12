@@ -168,8 +168,7 @@ fn all_clubs() -> Result<Vec<ClubEntry>, String> {
         return Ok(c);
     }
     let img = mem::game_plugin().ok_or("game_plugin niet geladen / not loaded")?;
-    let b = game::profile(img.id.as_deref()).ok_or("onbekende FM-versie: de clublijst is niet bekend / unknown FM build: club list unknown")?;
-    let pair = img.start + b.clubs;
+    let pair = game::statics(&img).ok_or("onbekende FM-versie: de clublijst is niet gevonden / unknown FM build: club list not found")?.clubs;
     let (begin, end) = (mem::u64_at(pair).ok_or("clublijst niet leesbaar")?, mem::u64_at(pair + 8).ok_or("clublijst niet leesbaar")?);
     if !mem::is_ptr(begin) || end < begin || (end - begin) % 8 != 0 || (end - begin) / 8 > 400_000 {
         return Err("clublijst ziet er niet uit zoals verwacht / club list looks wrong".into());
