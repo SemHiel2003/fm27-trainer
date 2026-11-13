@@ -1049,18 +1049,16 @@ fn known_code(c: u16) -> bool {
 }
 
 /// Een weekrecord: een geldige maandag en sessiecodes in de dagblokken. Het eerste woord van een
-/// dagblok is 0 in alle saves die gemeten zijn; het wordt nooit geschreven en hier alleen als klein
-/// getal verwacht (een vlag of een intensiteit zou passen). Een enkele onbekende code (een leeg
-/// vak, een nieuw soort dag) keurt de week niet af: `set_week` laat zo'n dag toch ongemoeid.
+/// dagblok wordt niet gecontroleerd: het is 0 in de eerste gemeten saves, maar in andere saves
+/// staat er een groter getal (gezien: 0xEB00–0xEF00, hoge byte loopt per dag op). De app leest of
+/// schrijft dat woord nooit. Een enkele onbekende code (een leeg vak, een nieuw soort dag) keurt
+/// de week niet af: `set_week` laat zo'n dag toch ongemoeid.
 fn week_ok(rec: u64) -> bool {
     if !mem::is_ptr(rec) || FmDate::read(rec + WEEK_DATE).is_none() {
         return false;
     }
     let Some(b) = mem::read_bytes(rec + WEEK_DAYS, 56) else { return false };
     let words: Vec<u16> = b.chunks_exact(2).map(|x| u16::from_le_bytes([x[0], x[1]])).collect();
-    if words.chunks_exact(4).any(|d| d[0] > 0xFF) {
-        return false;
-    }
     let codes: Vec<u16> = words.chunks_exact(4).flat_map(|d| d[1..].to_vec()).collect();
     let known = codes.iter().filter(|c| known_code(**c)).count();
     // een echte week heeft altijd rust/herstel, wedstrijden of trainingen (codes boven 0)
