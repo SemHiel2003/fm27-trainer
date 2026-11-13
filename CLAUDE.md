@@ -113,6 +113,23 @@ met `expect`), `discover`. Zie `agent/src/lib.rs`.
   (vbptr); de manager wordt via de staflijst gevonden. Een klasse opzoeken kost eenmalig ~1,5 s, een volledige
   heap-scan (3,5 GB) ~1,5 s in een release-build.
 
+## Na 0.2.5 (13 nov 2026, nog niet uitgebracht)
+
+- **Fork van arhxmmmmm** (`arhxmmmmm/forked-fm27-trainer`, MIT, gebaseerd op 0.2.3; sortitoutsi-post 78504 "Game Pass
+  fix"): vier wijzigingen. (1) Manager zoeken via `HUMAN_NON_PLAYER_MANAGER` (gewone vtable op offset 0, lijst van
+  menselijke managers op +0x18, gemeten op Game Pass 0.9.2435.0): overgenomen als derde zoekweg op Windows
+  (`human_via_manager_list` in `agent/src/game.rs`), na de staflijst en de RTTI; alleen in simulatie gebouwd, niet
+  live getest. (2) Eerste woord van een dagblok: zat al in 0.2.5. (3) Middelgrijze lege segmenten op Game Pass: hun
+  test `pies_with_grey_empties_and_neighbouring_icon` slaagt op onze uitlezing van 0.2.4 zonder wijziging; de test
+  is toegevoegd. (4) Automatisch uitlezen: eigen versie in `app/src/gui.rs` (schakelaar op Overzicht, elke 5–120 s,
+  haalt FM niet naar voren, telt alleen een volledige uitlezing zonder twijfel, doet niets als de waarden gelijk
+  zijn, uit tijdens handmatig aanpassen en met `FM27_SNAPSHOT`).
+- **UI** (`app/src/theme.rs`): nieuw palet, ringmeters op de vier tegels (`ring`), balken en ringen groeien bij het
+  openen van een pagina (`enter`/`restart_enter`) en glijden mee bij een nieuwe waarde, zijbalk en primaire knop
+  met zachte overgang, pagina vervaagt in. Alleen bekeken zonder verbinding (Overzicht, Training, Planning,
+  Instellingen); Club, Selectie en Transfers met een verbonden FM zijn niet opnieuw bekeken.
+- `cargo test -p fm27-trainer`: nu 4 tests.
+
 ## Veiligheidsregels (altijd)
 
 - Schrijven alleen via `write_checked`/`Patch`: eerst controleren dat het geheugen nog precies is wat je verwacht,
