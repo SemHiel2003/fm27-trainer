@@ -77,6 +77,8 @@ Players who have never trained with the team yet are skipped until they have.
 
 ## Install
 
+Step by step, with what to do when the app does not connect: **[Getting started guide](docs/GUIDE.md)**.
+
 ### macOS
 
 1. Download [FM27-Trainer-macOS.dmg](../../releases/latest/download/FM27-Trainer-macOS.dmg) (always the latest version) and drag **FM27 Trainer** to *Applications*.

@@ -55,6 +55,8 @@ in FM's trainingskalender, week na week.
 
 ## Installeren
 
+Stap voor stap, met wat je doet als de app niet verbindt: **[Aan de slag (Engels)](docs/GUIDE.md)**.
+
 ### macOS
 
 1. Download [FM27-Trainer-macOS.dmg](../../releases/latest/download/FM27-Trainer-macOS.dmg) (altijd de nieuwste versie) en sleep **FM27 Trainer** naar *Apps*.
