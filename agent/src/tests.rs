@@ -524,6 +524,43 @@ fn game_pass_big_club_calendar() {
     assert_eq!(day(w.weeks[0], 3), [0, 4, 5, 1], "donderdag krijgt het plan");
 }
 
+/// Een save waarin het eerste woord van elk dagblok geen 0 is maar 0xEB00–0xEF00 (gemeld op
+/// Windows, v0.2.4, week 2027/228). De kalender moet gevonden worden, en `set_week` schrijft alleen
+/// de drie sessievakken: het eerste woord blijft zoals FM het had.
+#[test]
+fn calendar_with_large_first_word() {
+    let _g = reset(Abi::Msvc);
+    let base = 0x7FF6_0000_0000u64;
+    with(|s| s.images.push(Image { path: r"C:\fm\game_plugin.dll".into(), id: Some("PE-6AE565AF-1821C000".into()), start: base, end: base + 0x1821_C000, segments: Vec::new() }));
+    let w = build_world(&game::WIN, base, 0x5705818, Some(0x56AF378), 0x28);
+    let reported: [[u16; 4]; 7] = [
+        [60160, 302, 0, 4],
+        [60416, 200, 1, 5],
+        [60416, 304, 2, 6],
+        [60672, 200, 3, 7],
+        [60928, 201, 202, 203],
+        [60928, 303, 200, 300],
+        [61184, 301, 300, 300],
+    ];
+    for rec in &w.weeks {
+        for (d, words) in reported.iter().enumerate() {
+            let bytes: Vec<u8> = words.iter().flat_map(|x| x.to_le_bytes()).collect();
+            assert!(mem::sys::write_raw(rec + 0x10 + d as u64 * 8, &bytes));
+        }
+    }
+
+    let tw = call(json!({"cmd": "training_weeks"})).expect("kalender met groot eerste woord");
+    assert_eq!(tw["weeks"].as_array().unwrap().len(), 3);
+    assert_eq!(tw["weeks"][0]["days"][2], json!([304, 2, 6]));
+
+    let req = json!({"cmd": "set_week", "start": {"year": 2027, "doy": 74}, "days": vec![[4u16, 5, 1]; 7]});
+    call(req).unwrap();
+    let day = |rec: u64, d: u64| -> Vec<u16> { (0..4).map(|i| mem::u16_at(rec + 0x10 + d * 8 + i * 2).unwrap()).collect() };
+    assert_eq!(day(w.weeks[0], 1), [60416, 200, 1, 5], "vandaag blijft");
+    assert_eq!(day(w.weeks[0], 2), [60416, 4, 5, 1], "eerste woord blijft, sessies krijgen het plan");
+    assert_eq!(day(w.weeks[0], 6), [61184, 4, 5, 1]);
+}
+
 #[test]
 fn unknown_build_is_read_only() {
     let _g = reset(Abi::Msvc);

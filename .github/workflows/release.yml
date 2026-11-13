@@ -73,6 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p fm27-agent
       - run: cargo build --release -p fm27-trainer
       - name: Inpakken
         shell: pwsh

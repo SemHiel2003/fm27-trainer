@@ -166,10 +166,11 @@ lijst van weekrecords (0x60 bytes: `+0x00` naam van het schema (FM-string), `+0x
 sessie 1, sessie 2, extra], `+0x48` u32 nummer van het schema-sjabloon). Op Windows probeert de code voor de
 zekerheid ook 0x08–0x80 met strenge controles, voor het geval een latere build afwijkt. **Zoeken** (9 nov 2026, na
 meldingen "training calendar not found"): alle heapwoorden gelijk aan de team-pointer, zonder limiet (vroeger stopte
-het bij 20.000; Sunderland-save: 2.042 treffers, kalender nummer 1.462). Een week telt als de maandag geldig is, het
-eerste woord per dag klein (≤ 0xFF, nooit geschreven) en ≥ 2/3 van de 21 vakken een bekende code (≤ 600), waarvan
+het bij 20.000; Sunderland-save: 2.042 treffers, kalender nummer 1.462). Een week telt als de maandag geldig is en ≥ 2/3 van de 21 vakken een bekende code (≤ 600), waarvan
 ≥ 5 niet nul; `set_week` laat een dag met een onbekende code ongemoeid. Vindt het niets, dan noemt de fout het aantal
-treffers en waarom bijna-kandidaten afvielen. De echte oorzaak bij de gebruikers is niet gezien (geen save van hen).
+treffers en waarom bijna-kandidaten afvielen. Het eerste woord per dag wordt sinds 13 nov 2026 niet meer gecontroleerd (nooit gelezen of geschreven): een
+gebruiker op Windows (v0.2.4) had daar 0xEB00–0xEF00 en de oude eis ≤ 0xFF keurde al zijn 61 weken af (test
+`calendar_with_large_first_word`).
 Sessiecodes: 0–7 Tactical Understanding, 100–108 Match Preparation, 200–228 Footballing
 Development, 300–307 Physical, 400 Team Bonding, 401 Community, 402 reizen, 500 wedstrijd.
 
