@@ -113,7 +113,7 @@ met `expect`), `discover`. Zie `agent/src/lib.rs`.
   (vbptr); de manager wordt via de staflijst gevonden. Een klasse opzoeken kost eenmalig ~1,5 s, een volledige
   heap-scan (3,5 GB) ~1,5 s in een release-build.
 
-## Na 0.2.5 (13 nov 2026, nog niet uitgebracht)
+## Versie 0.2.6 (13 nov 2026)
 
 - **Fork van arhxmmmmm** (`arhxmmmmm/forked-fm27-trainer`, MIT, gebaseerd op 0.2.3; sortitoutsi-post 78504 "Game Pass
   fix"): vier wijzigingen. (1) Manager zoeken via `HUMAN_NON_PLAYER_MANAGER` (gewone vtable op offset 0, lijst van
