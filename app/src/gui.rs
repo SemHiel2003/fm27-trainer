@@ -62,17 +62,32 @@ struct Settings {
     /// Tactisch begrip op 100 % houden zolang de app open is (FM laat het wekelijks zakken).
     #[serde(default)]
     keep_understanding: bool,
+    /// De Breakdown elke zoveel seconden zelf opnieuw uitlezen zolang hij in FM open staat
+    /// (idee en eerste versie: arhxmmmmm, fork forked-fm27-trainer).
+    #[serde(default)]
+    auto_read: bool,
+    #[serde(default = "ten")]
+    auto_read_secs: u32,
     planner: PlannerSettings,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: false, keep_understanding: false, planner: PlannerSettings::default() }
+        Settings { lang: i18n::detect(), rate: 1.17, capture_delay: true, auto_training: true, allow_untested: false, keep_understanding: false, auto_read: false, auto_read_secs: 10, planner: PlannerSettings::default() }
     }
 }
 
 fn yes() -> bool {
     true
+}
+
+fn ten() -> u32 {
+    10
+}
+
+/// Zelfde waarden (op een halve punt na) als bij de vorige uitlezing.
+fn same_values(a: &Effectiveness, b: &Effectiveness) -> bool {
+    Factor::ALL.iter().all(|f| (a.get(*f) - b.get(*f)).abs() < 0.5) && Component::ALL.iter().all(|c| (a.component(*c) - b.component(*c)).abs() < 0.5)
 }
 
 fn settings_file() -> PathBuf {
@@ -106,11 +121,17 @@ type AnalysisResult = Result<(vision::Analysis, String), String>;
 
 struct App {
     page: Page,
+    /// de pagina die het vorige beeld toonde (voor de intrede-animatie)
+    shown_page: Option<Page>,
     settings: Settings,
     eff: Effectiveness,
     status: String,
     status_error: bool,
     analysis_rx: Option<mpsc::Receiver<AnalysisResult>>,
+    /// de lopende uitlezing is door automatisch uitlezen gestart (stil, haalt FM niet naar voren)
+    auto_pending: bool,
+    auto_note: String,
+    last_auto: std::time::Instant,
     image_path: String,
     show_file: bool,
     edit_mode: bool,
@@ -158,11 +179,15 @@ impl App {
         };
         App {
             page,
+            shown_page: None,
             eff: crate::load_effectiveness().unwrap_or_default(),
             settings,
             status: String::new(),
             status_error: false,
             analysis_rx: None,
+            auto_pending: false,
+            auto_note: String::new(),
+            last_auto: std::time::Instant::now(),
             image_path: String::new(),
             show_file: false,
             edit_mode: false,
@@ -237,7 +262,7 @@ impl App {
 
     fn start_analysis(&mut self, ctx: &egui::Context, file: Option<PathBuf>) {
         let (tx, rx) = mpsc::channel();
-        let delay = self.settings.capture_delay && file.is_none();
+        let delay = self.settings.capture_delay && file.is_none() && !self.auto_pending;
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             if delay && cfg!(target_os = "macos") {
@@ -252,7 +277,9 @@ impl App {
             ctx2.request_repaint();
         });
         self.analysis_rx = Some(rx);
-        self.set_status(t!("Bezig met uitlezen…", "Reading…"), false);
+        if !self.auto_pending {
+            self.set_status(t!("Bezig met uitlezen…", "Reading…"), false);
+        }
     }
 
     fn poll_analysis(&mut self, ctx: &egui::Context) {
@@ -260,8 +287,22 @@ impl App {
         if let Ok(res) = rx.try_recv() {
             self.analysis_rx = None;
             let _ = ctx;
+            let auto = std::mem::take(&mut self.auto_pending);
             match res {
+                // automatisch: alleen een volledige, zekere uitlezing telt, en alleen als er iets veranderd is
+                Ok((a, _)) if auto && (a.gauges.len() < 17 || a.components.len() < 4 || a.gauges.iter().any(|g| g.doubt)) => {
+                    self.auto_note = t!("wacht op de Breakdown in FM", "waiting for the Breakdown in FM").to_string();
+                }
+                Ok((a, _)) if auto && same_values(&self.eff, &a.to_effectiveness("")) => {
+                    self.auto_note = t!(format!("geen verandering ({})", chrono::Local::now().format("%H:%M:%S")), format!("no change ({})", chrono::Local::now().format("%H:%M:%S"))).to_string();
+                }
+                Err(_) if auto => {
+                    self.auto_note = t!("wacht op de Breakdown in FM", "waiting for the Breakdown in FM").to_string();
+                }
                 Ok((a, src)) => {
+                    if auto {
+                        self.auto_note = t!(format!("bijgewerkt ({})", chrono::Local::now().format("%H:%M:%S")), format!("updated ({})", chrono::Local::now().format("%H:%M:%S"))).to_string();
+                    }
                     let src_is_screen = src == t!("FM27-scherm", "FM27 screen");
                     let when = chrono::Local::now().format("%d-%m %H:%M");
                     self.eff = a.to_effectiveness(&format!("{src} · {when}"));
@@ -310,10 +351,14 @@ impl App {
         egui::SidePanel::left("sidebar")
             .exact_width(236.0)
             .resizable(false)
-            .frame(Frame::new().fill(theme::SIDEBAR).inner_margin(Margin { left: 14, right: 14, top: 18, bottom: 14 }).stroke(Stroke::new(1.0, theme::BORDER)))
+            .show_separator_line(false)
+            .frame(Frame::new().fill(theme::SIDEBAR).inner_margin(Margin { left: 14, right: 14, top: 20, bottom: 16 }))
             .show(ctx, |ui| {
+                // haarlijn tussen zijbalk en inhoud
+                let edge = ui.max_rect().expand2(vec2(14.0, 20.0));
+                ui.painter().vline(edge.right() - 0.5, edge.y_range(), Stroke::new(1.0, theme::BORDER));
                 ui.horizontal(|ui| {
-                    Frame::new().fill(theme::ACCENT).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(7)).show(ui, |ui| {
+                    Frame::new().fill(theme::ACCENT).corner_radius(CornerRadius::same(11)).inner_margin(Margin::same(7)).show(ui, |ui| {
                         ui.label(theme::ic(icon::SOCCER_BALL).size(20.0).color(Color32::WHITE));
                     });
                     ui.vertical(|ui| {
@@ -473,11 +518,35 @@ impl App {
             }
         });
         if read {
+            self.last_auto = std::time::Instant::now();
             self.start_analysis(ctx, None);
         }
         if file {
             self.show_file = !self.show_file;
         }
+        ui.horizontal(|ui| {
+            if theme::toggle(ui, &mut self.settings.auto_read).changed() {
+                self.last_auto = std::time::Instant::now() - std::time::Duration::from_secs(600);
+                self.auto_note.clear();
+                self.save_settings();
+            }
+            ui.label(theme::label_strong(t!("Automatisch uitlezen", "Auto-read")));
+            if self.settings.auto_read {
+                ui.label(theme::dim(t!("elke", "every")));
+                if ui.add(egui::DragValue::new(&mut self.settings.auto_read_secs).range(5..=120).suffix(" s")).changed() {
+                    self.save_settings();
+                }
+                if !self.auto_note.is_empty() {
+                    theme::pill(ui, &self.auto_note, theme::INFO);
+                }
+            } else {
+                ui.label(theme::faint(t!(
+                    "Laat de Breakdown in FM open staan en de app leest hem zelf opnieuw.",
+                    "Leave the Breakdown open in FM and the app re-reads it by itself."
+                )));
+            }
+        });
+        ui.add_space(12.0);
         if self.show_file {
             theme::card(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -1849,6 +1918,17 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.snapshot(ctx);
         self.poll_analysis(ctx);
+        // automatisch uitlezen: niet tijdens handmatig aanpassen en nooit tijdens een testopname
+        if self.settings.auto_read
+            && !self.edit_mode
+            && self.analysis_rx.is_none()
+            && std::env::var_os("FM27_SNAPSHOT").is_none()
+            && self.last_auto.elapsed().as_secs() >= self.settings.auto_read_secs.max(5) as u64
+        {
+            self.last_auto = std::time::Instant::now();
+            self.auto_pending = true;
+            self.start_analysis(ctx, None);
+        }
         self.live.allow_untested = self.settings.allow_untested;
         self.live.keep_understanding = self.settings.keep_understanding;
         self.live.tick(ctx, &self.eff, &self.settings.planner, self.settings.auto_training);
@@ -1858,6 +1938,14 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.set_max_width(ui.available_width().min(1400.0));
+                    // pagina komt zacht binnen: kort vervagen en een paar pixels omhoog schuiven
+                    if self.shown_page != Some(self.page) {
+                        self.shown_page = Some(self.page);
+                        theme::restart_enter(ctx);
+                    }
+                    let t = theme::enter(ctx, 0.22);
+                    ui.set_opacity(0.25 + 0.75 * t);
+                    ui.add_space(8.0 * (1.0 - t));
                     match self.page {
                         Page::Overview => self.page_overview(ui, ctx),
                         Page::Training => self.page_training(ui, ctx),
@@ -1872,6 +1960,8 @@ impl eframe::App for App {
             });
         if self.analysis_rx.is_some() || self.live.busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        } else if self.settings.auto_read {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         } else {
             ctx.request_repaint_after(std::time::Duration::from_secs(5));
         }

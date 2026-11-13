@@ -1491,6 +1491,46 @@ mod tests {
         assert!(wrong.is_empty(), "verkeerd gelezen:\n{}", wrong.join("\n"));
     }
 
+    /// Game Pass (FM27 0.9.2435) tekent de lege segmenten middelgrijs in plaats van bijna wit, en in
+    /// de Breakdown staat vlak naast een meter vaak het witte icoontje van het label van de volgende
+    /// kolom. Elke meter moet zijn eigen waarde houden, en het icoon mag nooit als meter tellen.
+    /// (Gemeld en als test aangeleverd door arhxmmmmm, fork forked-fm27-trainer, MIT.)
+    #[test]
+    fn pies_with_grey_empties_and_neighbouring_icon() {
+        let bg = [30u8, 22, 26];
+        let mut wrong = Vec::new();
+        for r in [9.0f32, 14.0] {
+            for filled in 0..=10u32 {
+                for icon in [false, true] {
+                    let mut img = RgbaImage::from_pixel(140, 48, Rgba([bg[0], bg[1], bg[2], 255]));
+                    draw_pie(&mut img, 40.0, 24.0, r, filled, fm_color(filled), bg);
+                    // lege segmenten en spaken als middelgrijs (zoals in de Game Pass-opname)
+                    for y in 0..img.height() {
+                        for x in 0..img.width() {
+                            let (dx, dy) = (x as f32 + 0.5 - 40.0, y as f32 + 0.5 - 24.0);
+                            if (dx * dx + dy * dy).sqrt() <= r && is_light_on(img.get_pixel(x, y), 0.3) {
+                                img.put_pixel(x, y, Rgba([112, 116, 118, 255]));
+                            }
+                        }
+                    }
+                    if icon {
+                        for y in 17..31 {
+                            for x in 98..109 {
+                                img.put_pixel(x, y, Rgba([235, 235, 240, 255]));
+                            }
+                        }
+                    }
+                    let th = r * 1.4;
+                    let got = find_pie(&img, 0.0, 130.0, 24.0, th).map(|g| gauge_score(g.fill, g.hue, g.fill > 0.0).0.round() as u32);
+                    if got != Some(filled * 10) {
+                        wrong.push(format!("r {r} icoon {icon}: {filled} segmenten → {got:?}"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "verkeerd gelezen:\n{}", wrong.join("\n"));
+    }
+
     /// Grotere tekst in FM (of een kleinere rijafstand): de zoekband rond een label reikt dan tot in
     /// de meters van de rij erboven en eronder. Elke meter moet zijn eigen waarde houden.
     #[test]

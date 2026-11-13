@@ -9,21 +9,55 @@ use std::sync::Arc;
 pub use egui_phosphor::regular as icon;
 
 // ---- kleuren ------------------------------------------------------------------
-pub const BG: Color32 = Color32::from_rgb(13, 15, 20);
-pub const SIDEBAR: Color32 = Color32::from_rgb(17, 20, 27);
-pub const SURFACE: Color32 = Color32::from_rgb(23, 27, 36);
-pub const SURFACE2: Color32 = Color32::from_rgb(31, 36, 48);
-pub const HOVER: Color32 = Color32::from_rgb(39, 45, 60);
-pub const BORDER: Color32 = Color32::from_rgb(42, 48, 62);
-pub const TEXT: Color32 = Color32::from_rgb(234, 236, 242);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(160, 168, 184);
-pub const TEXT_FAINT: Color32 = Color32::from_rgb(108, 116, 134);
-pub const ACCENT: Color32 = Color32::from_rgb(124, 108, 255);
-pub const ACCENT_SOFT: Color32 = Color32::from_rgb(44, 40, 82);
+pub const BG: Color32 = Color32::from_rgb(9, 10, 14);
+pub const SIDEBAR: Color32 = Color32::from_rgb(12, 13, 18);
+pub const SURFACE: Color32 = Color32::from_rgb(18, 20, 27);
+pub const SURFACE2: Color32 = Color32::from_rgb(27, 30, 40);
+pub const HOVER: Color32 = Color32::from_rgb(36, 40, 53);
+pub const BORDER: Color32 = Color32::from_rgb(32, 36, 47);
+pub const TRACK: Color32 = Color32::from_rgb(31, 35, 46);
+pub const TEXT: Color32 = Color32::from_rgb(238, 240, 245);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(156, 163, 179);
+pub const TEXT_FAINT: Color32 = Color32::from_rgb(104, 111, 128);
+pub const ACCENT: Color32 = Color32::from_rgb(126, 111, 255);
+pub const ACCENT_HI: Color32 = Color32::from_rgb(150, 138, 255);
+pub const ACCENT_SOFT: Color32 = Color32::from_rgb(33, 30, 64);
 pub const SUCCESS: Color32 = Color32::from_rgb(61, 214, 140);
 pub const WARNING: Color32 = Color32::from_rgb(245, 181, 68);
 pub const DANGER: Color32 = Color32::from_rgb(255, 92, 108);
 pub const INFO: Color32 = Color32::from_rgb(76, 178, 255);
+
+/// Mengt twee kleuren (t = 0: a, t = 1: b).
+pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t.clamp(0.0, 1.0)).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+// ---- beweging -------------------------------------------------------------------
+/// Duur van een hover-/keuze-overgang.
+const QUICK: f32 = 0.14;
+
+fn enter_id() -> egui::Id {
+    egui::Id::new("fm27-page-enter")
+}
+
+/// Start de intrede-animatie opnieuw (bij het wisselen van pagina of na een nieuwe uitlezing).
+pub fn restart_enter(ctx: &egui::Context) {
+    let now = ctx.input(|i| i.time);
+    ctx.data_mut(|d| d.insert_temp(enter_id(), now));
+}
+
+/// Voortgang van de intrede-animatie over `secs` seconden, 0…1 met een zachte uitloop. Vraagt zelf
+/// om een volgend beeld zolang hij loopt.
+pub fn enter(ctx: &egui::Context, secs: f32) -> f32 {
+    let now = ctx.input(|i| i.time);
+    let start = ctx.data_mut(|d| *d.get_temp_mut_or(enter_id(), now));
+    let t = (((now - start) as f32) / secs).clamp(0.0, 1.0);
+    if t < 1.0 {
+        ctx.request_repaint();
+    }
+    1.0 - (1.0 - t).powi(3)
+}
 
 pub fn tint(c: Color32, a: f32) -> Color32 {
     // kleur gemengd met de kaartachtergrond (geen echte transparantie: rustiger in tabellen)
@@ -116,13 +150,14 @@ pub fn install(ctx: &egui::Context) {
         s.menu_margin = Margin::same(8);
         s.scroll.bar_width = 8.0;
         s.scroll.floating = true;
+        style.animation_time = 0.14;
 
         let v = &mut style.visuals;
         *v = egui::Visuals::dark();
         v.panel_fill = BG;
         v.window_fill = SURFACE;
-        v.extreme_bg_color = Color32::from_rgb(10, 12, 16);
-        v.faint_bg_color = Color32::from_rgb(27, 31, 41);
+        v.extreme_bg_color = Color32::from_rgb(8, 9, 12);
+        v.faint_bg_color = Color32::from_rgb(22, 25, 33);
         v.code_bg_color = SURFACE2;
         v.window_stroke = Stroke::new(1.0, BORDER);
         v.window_corner_radius = CornerRadius::same(14);
@@ -147,7 +182,7 @@ pub fn install(ctx: &egui::Context) {
         w.inactive.corner_radius = r;
         w.hovered.bg_fill = HOVER;
         w.hovered.weak_bg_fill = HOVER;
-        w.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(70, 78, 98));
+        w.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(58, 64, 82));
         w.hovered.fg_stroke = Stroke::new(1.5, Color32::WHITE);
         w.hovered.corner_radius = r;
         w.hovered.expansion = 0.0;
@@ -163,7 +198,7 @@ pub fn install(ctx: &egui::Context) {
 
 // ---- tekst ----------------------------------------------------------------------
 pub fn title(s: impl Into<String>) -> RichText {
-    RichText::new(s).font(FontId::new(26.0, bold())).color(TEXT)
+    RichText::new(s).font(FontId::new(27.0, bold())).color(TEXT)
 }
 pub fn h2(s: impl Into<String>) -> RichText {
     RichText::new(s).font(FontId::new(16.0, semibold())).color(TEXT)
@@ -186,8 +221,8 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
         .fill(SURFACE)
         .stroke(Stroke::new(1.0, BORDER))
-        .corner_radius(CornerRadius::same(14))
-        .inner_margin(Margin::same(18))
+        .corner_radius(CornerRadius::same(16))
+        .inner_margin(Margin::same(20))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             add(ui)
@@ -206,7 +241,7 @@ pub fn page_header(ui: &mut Ui, title_text: &str, subtitle: &str, actions: impl 
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), actions);
     });
-    ui.add_space(14.0);
+    ui.add_space(18.0);
 }
 
 pub fn progress(ui: &mut Ui, value: f32, height: f32, color: Color32) {
@@ -214,27 +249,52 @@ pub fn progress(ui: &mut Ui, value: f32, height: f32, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(vec2(w, height), Sense::hover());
     let p = ui.painter();
     let r = CornerRadius::same((height / 2.0) as u8);
-    p.rect_filled(rect, r, Color32::from_rgb(36, 41, 54));
+    p.rect_filled(rect, r, TRACK);
+    // de balk groeit bij het openen van de pagina en glijdt mee als de waarde verandert
+    let shown = ui.ctx().animate_value_with_time(ui.next_auto_id().with("bar"), value, 0.35) * enter(ui.ctx(), 0.6);
     let mut f = rect;
-    f.set_width((rect.width() * (value / 100.0).clamp(0.0, 1.0)).max(if value > 0.0 { height } else { 0.0 }));
+    f.set_width((rect.width() * (shown / 100.0).clamp(0.0, 1.0)).max(if value > 0.0 { height } else { 0.0 }));
     p.rect_filled(f, r, color);
 }
 
-/// Tegel met een groot getal.
+/// Ring die met de klok mee vult vanaf 12 uur (0…100).
+pub fn ring(ui: &mut Ui, value: f32, size: f32, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let p = ui.painter();
+    let (c, w) = (rect.center(), (size * 0.11).max(3.0));
+    let r = size / 2.0 - w / 2.0;
+    p.circle_stroke(c, r, Stroke::new(w, TRACK));
+    let shown = ui.ctx().animate_value_with_time(ui.next_auto_id().with("ring"), value, 0.35) * enter(ui.ctx(), 0.8);
+    let sweep = (shown / 100.0).clamp(0.0, 1.0) * std::f32::consts::TAU;
+    if sweep > 0.001 {
+        let n = ((sweep / std::f32::consts::TAU) * 96.0).ceil().max(2.0) as usize;
+        let at = |a: f32| c + vec2(a.sin(), -a.cos()) * r;
+        let pts: Vec<egui::Pos2> = (0..=n).map(|i| at(sweep * i as f32 / n as f32)).collect();
+        p.circle_filled(pts[0], w / 2.0, color);
+        p.circle_filled(*pts.last().unwrap(), w / 2.0, color);
+        p.add(egui::Shape::line(pts, Stroke::new(w, color)));
+    }
+}
+
+/// Tegel met een groot getal; met `bar` een ring rechts die de waarde toont.
 pub fn stat_tile(ui: &mut Ui, icon_s: &str, label: &str, value: &str, sub: &str, color: Color32, bar: Option<f32>) {
     card(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(ic(icon_s).size(16.0).color(color));
-            ui.label(caps(label));
+            ui.label(ic(icon_s).size(15.0).color(color));
+            ui.add(egui::Label::new(caps(label)).truncate());
         });
-        ui.add_space(2.0);
-        ui.label(RichText::new(value).font(FontId::new(28.0, bold())).color(TEXT));
-        if let Some(b) = bar {
-            progress(ui, b, 6.0, color);
-        }
-        if !sub.is_empty() {
-            ui.label(faint(sub));
-        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new(value).font(FontId::new(32.0, bold())).color(TEXT));
+                if !sub.is_empty() {
+                    ui.label(RichText::new(sub).size(12.5).color(if bar.is_some() { color } else { TEXT_FAINT }));
+                }
+            });
+            if let Some(b) = bar {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ring(ui, b, 54.0, color));
+            }
+        });
     });
 }
 
@@ -249,20 +309,29 @@ pub fn pill(ui: &mut Ui, text: &str, color: Color32) -> Response {
 }
 
 pub fn primary_button(ui: &mut Ui, icon_s: &str, text: &str, enabled: bool) -> Response {
-    let b = egui::Button::new(icon_label(icon_s, text, FontId::new(14.0, semibold()), Color32::WHITE))
-        .fill(if enabled { ACCENT } else { SURFACE2 })
-        .stroke(Stroke::NONE)
-        .corner_radius(CornerRadius::same(10))
-        .min_size(vec2(0.0, 34.0));
-    ui.add_enabled(enabled, b)
+    let job = icon_label(icon_s, text, FontId::new(14.0, semibold()), if enabled { Color32::WHITE } else { TEXT_FAINT });
+    let galley = ui.fonts(|f| f.layout_job(job));
+    let size = vec2(galley.size().x + 32.0, 36.0);
+    let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
+    let hover = ui.ctx().animate_bool_with_time(resp.id.with("h"), enabled && resp.hovered(), QUICK);
+    let down = enabled && resp.is_pointer_button_down_on();
+    let fill = if !enabled { SURFACE2 } else if down { mix(ACCENT, BG, 0.18) } else { mix(ACCENT, ACCENT_HI, hover) };
+    let p = ui.painter();
+    if enabled {
+        // zachte gloed onder de knop
+        p.rect_filled(rect.translate(vec2(0.0, 3.0)).shrink2(vec2(6.0, 2.0)), CornerRadius::same(12), mix(BG, ACCENT, 0.16 + 0.12 * hover));
+    }
+    p.rect_filled(rect, CornerRadius::same(10), fill);
+    p.galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
 pub fn button(ui: &mut Ui, icon_s: &str, text: &str, enabled: bool) -> Response {
     let col = if enabled { TEXT } else { TEXT_FAINT };
     let b = egui::Button::new(icon_label(icon_s, text, FontId::new(14.0, medium()), col))
         .corner_radius(CornerRadius::same(10))
-        .min_size(vec2(0.0, 34.0));
-    ui.add_enabled(enabled, b)
+        .min_size(vec2(0.0, 36.0));
+    ui.add_enabled(enabled, b).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 pub fn small_button(ui: &mut Ui, text: &str, enabled: bool) -> Response {
@@ -276,16 +345,18 @@ pub fn small_button(ui: &mut Ui, text: &str, enabled: bool) -> Response {
 pub fn nav_item(ui: &mut Ui, icon_s: &str, label: &str, selected: bool) -> Response {
     let size = vec2(ui.available_width(), 38.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let sel = ui.ctx().animate_bool_with_time(resp.id.with("s"), selected, 0.2);
+    let hov = ui.ctx().animate_bool_with_time(resp.id.with("h"), resp.hovered() && !selected, QUICK);
     let p = ui.painter();
-    if selected {
-        p.rect_filled(rect, CornerRadius::same(10), ACCENT_SOFT);
-        let bar = egui::Rect::from_min_size(rect.min + vec2(0.0, 9.0), vec2(3.0, 20.0));
+    let fill = mix(mix(SIDEBAR, SURFACE2, hov), ACCENT_SOFT, sel);
+    p.rect_filled(rect, CornerRadius::same(10), fill);
+    if sel > 0.01 {
+        let h = 18.0 * sel;
+        let bar = egui::Rect::from_center_size(rect.left_center() + vec2(1.5, 0.0), vec2(3.0, h));
         p.rect_filled(bar, CornerRadius::same(2), ACCENT);
-    } else if resp.hovered() {
-        p.rect_filled(rect, CornerRadius::same(10), SURFACE2);
     }
-    let col = if selected { Color32::WHITE } else if resp.hovered() { TEXT } else { TEXT_DIM };
-    p.text(rect.left_center() + vec2(16.0, 0.0), egui::Align2::LEFT_CENTER, icon_s, FontId::new(18.0, icons()), if selected { ACCENT } else { col });
+    let col = mix(mix(TEXT_DIM, TEXT, hov), Color32::WHITE, sel);
+    p.text(rect.left_center() + vec2(16.0, 0.0), egui::Align2::LEFT_CENTER, icon_s, FontId::new(18.0, icons()), mix(col, ACCENT_HI, sel));
     p.text(rect.left_center() + vec2(46.0, 0.0), egui::Align2::LEFT_CENTER, label, FontId::new(14.0, medium()), col);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -340,7 +411,8 @@ pub fn session_chip(ui: &mut Ui, text: &str, color: Color32, highlight: bool) ->
 
 pub fn status_dot(ui: &mut Ui, color: Color32) {
     let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-    ui.painter().circle_filled(r.center(), 4.5, color);
+    ui.painter().circle_filled(r.center(), 5.0, mix(SURFACE, color, 0.28));
+    ui.painter().circle_filled(r.center(), 3.2, color);
 }
 
 /// Rij met naam, waarde en een dunne balk (voor de factors).
@@ -368,7 +440,7 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
     }
     let t = ui.ctx().animate_bool(resp.id, *on);
     let p = ui.painter();
-    let bg = if *on { SUCCESS } else { Color32::from_rgb(58, 64, 80) };
+    let bg = mix(Color32::from_rgb(52, 57, 72), SUCCESS, t);
     p.rect_filled(rect, CornerRadius::same(13), bg);
     let x = egui::lerp((rect.left() + 13.0)..=(rect.right() - 13.0), t);
     p.circle_filled(egui::pos2(x, rect.center().y), 10.0, Color32::WHITE);

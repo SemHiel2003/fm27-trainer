@@ -365,6 +365,8 @@ struct State {
     /// (adres van de team-pointer in het trainingsblok, afstand tot de weeklijst)
     training_block: Option<(u64, u64)>,
     human_vtables: Vec<u64>,
+    /// vtables van HUMAN_NON_PLAYER_MANAGER (None = nog niet gezocht; de zoektocht kost ~1,5 s)
+    manager_vtables: Option<Vec<u64>>,
     undo: Vec<Change>,
     /// (begin van game_plugin, de zelf opgezochte vaste plekken) op een build zonder profiel
     discovered: Option<(u64, Statics)>,
@@ -580,6 +582,41 @@ fn human_via_staff(img: &mem::Image) -> Option<Chain> {
         .find_map(check_chain)
 }
 
+/// Laatste redmiddel op Windows, als de staflijst en de RTTI van `db::HUMAN_NON_PLAYER` niets
+/// opleveren (dat object begint daar met een vbptr, niet met een vtable). `HUMAN_NON_PLAYER_MANAGER`
+/// is een gewoon object met een vtable op offset 0 dat de menselijke managers in een lijst houdt;
+/// op Game Pass 0.9.2435.0 gemeten op +0x18, met één element. Elk (begin, end)-paar in het begin
+/// van het object dat op een korte pointerlijst lijkt, wordt geprobeerd; `check_chain` beslist.
+/// Gevonden en aangeleverd door arhxmmmmm (fork forked-fm27-trainer, MIT).
+fn human_via_manager_list(img: &mem::Image) -> Option<Chain> {
+    let vts = match with_state(|s| s.manager_vtables.clone()) {
+        Some(v) => v,
+        None => {
+            let mut names = rtti::decorated("db", "HUMAN_NON_PLAYER_MANAGER");
+            names.extend([".?AVHUMAN_NON_PLAYER_MANAGER@@".to_string(), ".?AUHUMAN_NON_PLAYER_MANAGER@@".to_string()]);
+            let v = rtti::vtables_of(img, &names);
+            with_state(|s| s.manager_vtables = Some(v.clone()));
+            v
+        }
+    };
+    for obj in rtti::instances(&vts, 64) {
+        let Some(bytes) = mem::read_bytes(obj, 0x200) else { continue };
+        let words: Vec<u64> = bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+        for w in words.windows(2) {
+            let (begin, end) = (w[0], w[1]);
+            if !mem::is_ptr(begin) || end <= begin || (end - begin) % 8 != 0 || (end - begin) / 8 > 64 {
+                continue;
+            }
+            let Some(list) = mem::read_bytes(begin, (end - begin) as usize) else { continue };
+            let found = list.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).filter(|p| mem::is_ptr(*p)).find_map(check_chain);
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+    None
+}
+
 /// Vindt (en onthoudt) de menselijke manager.
 pub fn chain() -> Result<Chain, String> {
     if let Some(h) = with_state(|s| s.human) {
@@ -590,7 +627,7 @@ pub fn chain() -> Result<Chain, String> {
     let img = mem::game_plugin().ok_or("game_plugin niet geladen (laadt FM nog?) / game_plugin not loaded yet")?;
     // op Windows eerst de staflijst (geen RTTI nodig), op de Mac eerst de geteste RTTI-weg
     let found = match mem::abi() {
-        Abi::Msvc => human_via_staff(&img).or_else(|| human_via_rtti(&img)),
+        Abi::Msvc => human_via_staff(&img).or_else(|| human_via_rtti(&img)).or_else(|| human_via_manager_list(&img)),
         Abi::Itanium => human_via_rtti(&img).or_else(|| human_via_staff(&img)),
     };
     match found {
