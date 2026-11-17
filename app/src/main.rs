@@ -2,6 +2,7 @@
 
 mod agent;
 mod export;
+mod fmterms;
 mod gui;
 mod i18n;
 mod labels;

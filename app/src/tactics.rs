@@ -262,8 +262,8 @@ fn generic(line: Line) -> &'static [&'static str] {
 pub fn ip_label(bit: Option<u8>) -> (String, String) {
     match bit {
         Some(b) => match ip_role(b) {
-            Some(r) => (r.code.to_string(), r.name.to_string()),
-            None => (format!("#{b}"), crate::t!("rol die de app nog niet kent", "role the app does not know yet").to_string()),
+            Some(r) => crate::fmterms::role(r.code, r.name),
+            None => (format!("#{b}"), crate::t!("rol die de app nog niet kent", "role the app does not know yet", "função que o app ainda não conhece").to_string()),
         },
         None => ("–".into(), String::new()),
     }
@@ -272,8 +272,8 @@ pub fn ip_label(bit: Option<u8>) -> (String, String) {
 pub fn oop_label(bit: Option<u8>) -> (String, String) {
     match bit {
         Some(b) => match oop_role(b) {
-            Some(r) => (r.code.to_string(), r.name.to_string()),
-            None => (format!("#{b}"), crate::t!("rol die de app nog niet kent", "role the app does not know yet").to_string()),
+            Some(r) => crate::fmterms::role(r.code, r.name),
+            None => (format!("#{b}"), crate::t!("rol die de app nog niet kent", "role the app does not know yet", "função que o app ainda não conhece").to_string()),
         },
         None => ("–".into(), String::new()),
     }
@@ -349,12 +349,12 @@ pub fn fit(p: &Player, place: &Place) -> f32 {
 /// FM's woorden voor een positiecijfer.
 pub fn position_word(r: u8) -> &'static str {
     match r {
-        18..=20 => crate::t!("natuurlijk", "natural"),
-        15..=17 => crate::t!("volleerd", "accomplished"),
-        12..=14 => crate::t!("bekwaam", "competent"),
-        9..=11 => crate::t!("onwennig", "unconvincing"),
-        5..=8 => crate::t!("ongemakkelijk", "awkward"),
-        _ => crate::t!("kent hij niet", "ineffectual"),
+        18..=20 => crate::t!("natuurlijk", "natural", "natural"),
+        15..=17 => crate::t!("volleerd", "accomplished", "experiente"),
+        12..=14 => crate::t!("bekwaam", "competent", "competente"),
+        9..=11 => crate::t!("onwennig", "unconvincing", "pouco convincente"),
+        5..=8 => crate::t!("ongemakkelijk", "awkward", "desajeitado"),
+        _ => crate::t!("kent hij niet", "ineffectual", "ineficaz"),
     }
 }
 

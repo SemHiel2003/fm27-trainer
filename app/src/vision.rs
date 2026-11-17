@@ -167,14 +167,14 @@ mod mac_capture {
             .filter(|w| w.owner.contains("Football Manager") && w.layer == 0 && w.rect.size.width >= 400.0 && w.rect.size.height >= 300.0)
             .max_by(|a, b| (a.rect.size.width * a.rect.size.height).total_cmp(&(b.rect.size.width * b.rect.size.height)));
         let Some(w) = best else {
-            bail!("{}", crate::t!("Geen Football Manager-venster gevonden. Draait FM27?", "No Football Manager window found. Is FM27 running?"));
+            bail!("{}", crate::t!("Geen Football Manager-venster gevonden. Draait FM27?", "No Football Manager window found. Is FM27 running?", "Nenhuma janela do Football Manager encontrada. O FM27 está aberto?"));
         };
         if !unsafe { CGPreflightScreenCaptureAccess() } {
             // laat macOS de vraag tonen (de eerste keer) en zet de app in de lijst
             unsafe { CGRequestScreenCaptureAccess() };
             bail!("{}", crate::t!(
                 "Geen toestemming voor Schermopname. Zet FM27 Trainer aan bij Systeeminstellingen → Privacy en beveiliging → Schermopname en start de app opnieuw.",
-                "No Screen Recording permission. Switch on FM27 Trainer under System Settings → Privacy & Security → Screen Recording, then restart the app."
+                "No Screen Recording permission. Switch on FM27 Trainer under System Settings → Privacy & Security → Screen Recording, then restart the app.", "Sem permissão de Gravação de Tela. Ative o FM27 Trainer em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e reinicie o app."
             ));
         }
         #[allow(deprecated)]
@@ -183,7 +183,7 @@ mod mac_capture {
         let data = unsafe { CGDataProvider::data(CGImage::data_provider(img.as_deref()).as_deref()) }.map(|d| d.to_vec()).unwrap_or_default();
         let row = unsafe { CGImage::bytes_per_row(img.as_deref()) };
         if width < 200 || row < width * 4 || data.len() < row * height {
-            bail!("{}", crate::t!("Vastgelegd beeld is leeg; staat Schermopname-toestemming aan?", "Captured image is empty; is Screen Recording permission enabled?"));
+            bail!("{}", crate::t!("Vastgelegd beeld is leeg; staat Schermopname-toestemming aan?", "Captured image is empty; is Screen Recording permission enabled?", "A imagem capturada está vazia; a permissão de Gravação de Tela está ativada?"));
         }
         // rijen kunnen opvulling hebben; BGRA → RGBA
         let mut buf = Vec::with_capacity(width * height * 4);
@@ -197,7 +197,7 @@ mod mac_capture {
         if buf.chunks_exact(4).step_by(97).all(|p| p[0] < 8 && p[1] < 8 && p[2] < 8) {
             bail!("{}", crate::t!(
                 "Het FM-venster is niet in beeld. Zet FM zichtbaar (met de Breakdown open) en lees opnieuw uit.",
-                "The FM window is not visible. Bring FM into view (with the Breakdown open) and read again."
+                "The FM window is not visible. Bring FM into view (with the Breakdown open) and read again.", "A janela do FM não está visível. Deixe o FM à vista (com o Detalhamento aberto) e leia de novo."
             ));
         }
         RgbaImage::from_raw(width as u32, height as u32, buf).ok_or_else(|| anyhow!("opname omzetten mislukt"))
@@ -235,15 +235,15 @@ fn capture_fm_window_xcap() -> Result<RgbaImage> {
             best = Some((key, w));
         }
     }
-    let (_, w) = best.ok_or_else(|| anyhow!("{}", crate::t!("Geen Football Manager-venster gevonden. Draait FM27?", "No Football Manager window found. Is FM27 running?")))?;
+    let (_, w) = best.ok_or_else(|| anyhow!("{}", crate::t!("Geen Football Manager-venster gevonden. Draait FM27?", "No Football Manager window found. Is FM27 running?", "Nenhuma janela do Football Manager encontrada. O FM27 está aberto?")))?;
     let img = w.capture_image().map_err(|e| {
         anyhow!("{} ({e})", crate::t!(
             "Vastleggen mislukt. Geef deze app toestemming bij Systeeminstellingen → Privacy en beveiliging → Schermopname.",
-            "Capture failed. Allow this app under System Settings → Privacy & Security → Screen Recording."
+            "Capture failed. Allow this app under System Settings → Privacy & Security → Screen Recording.", "Falha na captura. Permita este app em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela."
         ))
     })?;
     if img.width() < 200 {
-        bail!("{}", crate::t!("Vastgelegd beeld is leeg; staat Schermopname-toestemming aan?", "Captured image is empty; is Screen Recording permission enabled?"));
+        bail!("{}", crate::t!("Vastgelegd beeld is leeg; staat Schermopname-toestemming aan?", "Captured image is empty; is Screen Recording permission enabled?", "A imagem capturada está vazia; a permissão de Gravação de Tela está ativada?"));
     }
     Ok(img)
 }
@@ -374,7 +374,7 @@ mod platform {
             "{}",
             crate::t!(
                 "Windows heeft geen tekstherkenning (OCR) geïnstalleerd. Voeg Engels toe: Instellingen → Tijd en taal → Taal en regio → Een taal toevoegen → English, met 'Optische tekenherkenning'.",
-                "Windows has no text recognition (OCR) installed. Add English: Settings → Time & language → Language & region → Add a language → English, with 'Optical character recognition'."
+                "Windows has no text recognition (OCR) installed. Add English: Settings → Time & language → Language & region → Add a language → English, with 'Optical character recognition'.", "O Windows não tem reconhecimento de texto (OCR) instalado. Adicione o inglês: Configurações → Hora e idioma → Idioma e região → Adicionar um idioma → English, com 'Reconhecimento óptico de caracteres'."
             )
         ))
     }
@@ -1502,7 +1502,7 @@ pub fn analyze_screen() -> Result<(Analysis, RgbaImage)> {
     if a.gauges.len() < 4 {
         let send = crate::t!(
             "Lukt het niet? Stuur last-capture.png en last-analysis.txt uit de app-map (Instellingen → Open app-map) mee met je melding.",
-            "Still not working? Attach last-capture.png and last-analysis.txt from the app folder (Settings → Open app folder) to your report."
+            "Still not working? Attach last-capture.png and last-analysis.txt from the app folder (Settings → Open app folder) to your report.", "Ainda não funciona? Anexe last-capture.png e last-analysis.txt da pasta do app (Configurações → Abrir pasta do app) ao seu relato."
         );
         if lines.len() < 5 {
             // geen tekst: de opname is leeg of zwart (FM op volledig scherm, of geminimaliseerd)
@@ -1510,7 +1510,7 @@ pub fn analyze_screen() -> Result<(Analysis, RgbaImage)> {
                 "{} {send}",
                 crate::t!(
                     format!("Op de opname van het FM-venster staat bijna geen tekst ({} regels). Staat FM in beeld (niet geminimaliseerd)? Zet FM anders op venster of randloos venster en probeer opnieuw.", lines.len()),
-                    format!("The capture of the FM window has almost no text ({} lines). Is FM visible (not minimised)? Otherwise switch FM to windowed or borderless and try again.", lines.len())
+                    format!("The capture of the FM window has almost no text ({} lines). Is FM visible (not minimised)? Otherwise switch FM to windowed or borderless and try again.", lines.len()), format!("A captura da janela do FM quase não tem texto ({} linhas). O FM está visível (não minimizado)? Se não, coloque o FM em modo janela ou sem bordas e tente de novo.", lines.len())
                 )
             );
         }
@@ -1521,7 +1521,7 @@ pub fn analyze_screen() -> Result<(Analysis, RgbaImage)> {
                 "{} {send}",
                 crate::t!(
                     format!("Geen labels van de Breakdown gevonden (OCR-taal {}). Open in FM27 Training → Tactical Effectiveness met de Breakdown in beeld. FM in het Chinees, Japans, Koreaans, Russisch of Grieks? Dan moet Windows die taal kunnen lezen: Instellingen → Tijd en taal → Taal en regio → taal toevoegen, met 'Optische tekenherkenning'. Of zet FM op Engels.", a.ocr),
-                    format!("No Breakdown labels found (OCR language {}). Open Training → Tactical Effectiveness in FM27 with the Breakdown on screen. FM in Chinese, Japanese, Korean, Russian or Greek? Then Windows must be able to read that language: Settings → Time & language → Language & region → Add a language, with 'Optical character recognition'. Or switch FM to English.", a.ocr)
+                    format!("No Breakdown labels found (OCR language {}). Open Training → Tactical Effectiveness in FM27 with the Breakdown on screen. FM in Chinese, Japanese, Korean, Russian or Greek? Then Windows must be able to read that language: Settings → Time & language → Language & region → Add a language, with 'Optical character recognition'. Or switch FM to English.", a.ocr), format!("Nenhum rótulo do Detalhamento encontrado (idioma do OCR {}). Abra Treino → Eficácia Tática no FM27 com o Detalhamento na tela. FM em chinês, japonês, coreano, russo ou grego? Então o Windows precisa conseguir ler esse idioma: Configurações → Hora e idioma → Idioma e região → Adicionar um idioma, com 'Reconhecimento óptico de caracteres'. Ou troque o FM para inglês.", a.ocr)
                 )
             );
         }
@@ -1529,7 +1529,7 @@ pub fn analyze_screen() -> Result<(Analysis, RgbaImage)> {
             "{} {send}",
             crate::t!(
                 format!("Breakdown-scherm niet herkend ({} van 17 meters gevonden). Open in FM27 het Tactical Effectiveness-overzicht met de Breakdown (Tactical Understanding / Player Ability / Player Buy-In / Next Match Info) en probeer opnieuw.", a.gauges.len()),
-                format!("Breakdown screen not recognised ({} of 17 gauges found). Open the Tactical Effectiveness overview with the Breakdown (Tactical Understanding / Player Ability / Player Buy-In / Next Match Info) in FM27 and try again.", a.gauges.len())
+                format!("Breakdown screen not recognised ({} of 17 gauges found). Open the Tactical Effectiveness overview with the Breakdown (Tactical Understanding / Player Ability / Player Buy-In / Next Match Info) in FM27 and try again.", a.gauges.len()), format!("Tela do Detalhamento não reconhecida ({} de 17 medidores encontrados). Abra a visão geral da Eficácia Tática com o Detalhamento (Tactical Understanding / Player Ability / Player Buy-In / Next Match Info) no FM27 e tente de novo.", a.gauges.len())
             )
         );
     }

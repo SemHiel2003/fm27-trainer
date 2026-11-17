@@ -160,24 +160,31 @@ fn short_result(v: &Value) -> String {
         Value::Object(m) if m.contains_key("added") => {
             let mut s = t!(
                 format!("({} spelers, {} waarden naar 100 %, {} toegevoegd", m["players"], m["items"], m["added"]),
-                format!("({} players, {} values to 100%, {} added", m["players"], m["items"], m["added"])
+                format!("({} players, {} values to 100%, {} added", m["players"], m["items"], m["added"]), format!("({} jogadores, {} valores para 100%, {} adicionados", m["players"], m["items"], m["added"])
             );
             if m.get("no_room").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
                 s += &t!(
                     format!("; bij {} spelers is de lijst vol: train een week en probeer opnieuw", m["no_room"]),
-                    format!("; {} players have a full list: train a week and try again", m["no_room"])
+                    format!("; {} players have a full list: train a week and try again", m["no_room"]), format!("; {} jogadores têm a lista cheia: treine uma semana e tente de novo", m["no_room"])
                 );
             }
             s + ")"
         }
-        Value::Object(m) if m.contains_key("players") => format!("({} {})", m["players"], t!("spelers", "players")),
-        Value::Object(m) if m.contains_key("bans") => format!("({} {})", m["bans"], t!("schorsingen", "bans")),
+        Value::Object(m) if m.contains_key("players") => format!("({} {})", m["players"], t!("spelers", "players", "jogadores")),
+        Value::Object(m) if m.contains_key("bans") => format!("({} {})", m["bans"], t!("schorsingen", "bans", "suspensões")),
         Value::Object(m) if m.contains_key("undone") => format!("({})", m["undone"].as_str().unwrap_or("")),
         _ => String::new(),
     }
 }
 
 impl LiveState {
+    /// Na een taalwissel: de standaardmelding "verbonden" opnieuw in de nieuwe taal.
+    pub fn retranslate(&mut self) {
+        if ["Verbonden met FM27.", "Connected to FM27.", "Conectado ao FM27."].contains(&self.status.as_str()) {
+            self.status = crate::t!("Verbonden met FM27.", "Connected to FM27.", "Conectado ao FM27.").into();
+        }
+    }
+
     pub fn busy(&self) -> bool {
         self.rx.is_some() || self.train_rx.is_some()
     }
@@ -210,13 +217,13 @@ impl LiveState {
     /// Controleren (er wordt niets geschreven).
     pub fn plan_sale(&mut self, ctx: &egui::Context, uid: u32, club: u32, fee: i64, wage: Option<i64>) {
         self.sell.plan = None;
-        self.sell.status = t!("Controleren…", "Checking…").into();
+        self.sell.status = t!("Controleren…", "Checking…", "Verificando…").into();
         self.sell.error = false;
         self.aux(ctx, Aux::Plan((uid, club, fee, wage)), json!({"cmd": "sell", "uid": uid, "club": club, "fee": fee, "wage": wage, "dry_run": true}));
     }
 
     pub fn sell_now(&mut self, ctx: &egui::Context, uid: u32, club: u32, fee: i64, wage: Option<i64>) {
-        self.sell.status = t!("Verkopen…", "Selling…").into();
+        self.sell.status = t!("Verkopen…", "Selling…", "Vendendo…").into();
         self.sell.error = false;
         self.aux(ctx, Aux::Sale, json!({"cmd": "sell", "uid": uid, "club": club, "fee": fee, "wage": wage}));
     }
@@ -232,13 +239,13 @@ impl LiveState {
     /// Een aankoop controleren (er wordt niets geschreven).
     pub fn plan_buy(&mut self, ctx: &egui::Context, uid: u32, club: u32, fee: i64, wage: Option<i64>) {
         self.sell.plan = None;
-        self.sell.status = t!("Controleren…", "Checking…").into();
+        self.sell.status = t!("Controleren…", "Checking…", "Verificando…").into();
         self.sell.error = false;
         self.aux(ctx, Aux::BuyPlan((uid, club, fee, wage)), json!({"cmd": "buy", "uid": uid, "club": club, "fee": fee, "wage": wage, "dry_run": true}));
     }
 
     pub fn buy_now(&mut self, ctx: &egui::Context, uid: u32, club: u32, fee: i64, wage: Option<i64>) {
-        self.sell.status = t!("Kopen…", "Buying…").into();
+        self.sell.status = t!("Kopen…", "Buying…", "Comprando…").into();
         self.sell.error = false;
         self.aux(ctx, Aux::Buy, json!({"cmd": "buy", "uid": uid, "club": club, "fee": fee, "wage": wage}));
     }
@@ -299,7 +306,7 @@ impl LiveState {
             snap.teams = select(choice).ok();
             if let Some(req) = action {
                 match agent::request(req) {
-                    Ok(v) => snap.message = format!("{label}: {} {}", t!("klaar", "done"), short_result(&v)),
+                    Ok(v) => snap.message = format!("{label}: {} {}", t!("klaar", "done", "concluído"), short_result(&v)),
                     Err(e) => {
                         snap.message = format!("{label}: {e:#}");
                         snap.error = true;
@@ -342,7 +349,7 @@ impl LiveState {
                     if untested && !allowed && snap.message.is_empty() {
                         snap.message = t!(
                             "Deze FM-versie is nog niet getest met FM27 Trainer: alleen lezen. Controleer of club en selectie kloppen met FM; aanpassen kun je in Instellingen aanzetten.",
-                            "This FM build has not been verified with FM27 Trainer yet: read-only. Check that club and squad match FM; you can allow changes in Settings."
+                            "This FM build has not been verified with FM27 Trainer yet: read-only. Check that club and squad match FM; you can allow changes in Settings.", "Esta versão do FM ainda não foi verificada com o FM27 Trainer: só leitura. Confira se clube e elenco batem com o FM; você pode permitir alterações em Configurações."
                         )
                         .into();
                         snap.error = true;
@@ -396,7 +403,7 @@ impl LiveState {
         });
         self.train_rx = Some(rx);
         if !auto {
-            self.train_status = if write { t!("Training wordt in FM gezet…", "Writing training into FM…").into() } else { t!("Plan wordt gemaakt…", "Building plan…").into() };
+            self.train_status = if write { t!("Training wordt in FM gezet…", "Writing training into FM…", "Escrevendo o treino no FM…").into() } else { t!("Plan wordt gemaakt…", "Building plan…", "Montando o plano…").into() };
             self.train_error = false;
         }
     }
@@ -427,7 +434,7 @@ impl LiveState {
                     let n = r.get("players").and_then(|v| v.as_u64()).unwrap_or(0);
                     let text = t!(
                         format!("Tactisch begrip teruggezet naar 100 % voor {n} spelers (FM had het laten zakken)."),
-                        format!("Tactical understanding put back to 100% for {n} players (FM had let it drop).")
+                        format!("Tactical understanding put back to 100% for {n} players (FM had let it drop)."), format!("Entrosamento tático devolvido a 100% para {n} jogadores (o FM tinha deixado cair).")
                     );
                     self.log.insert(0, LogEntry { at: chrono::Local::now(), text: text.clone(), auto: true });
                     self.log.truncate(40);
@@ -440,7 +447,7 @@ impl LiveState {
                     self.untested_build = u;
                 }
                 if !s.message.is_empty() || was != self.connected {
-                    self.status = if s.message.is_empty() { t!("Verbonden met FM27.", "Connected to FM27.").into() } else { s.message };
+                    self.status = if s.message.is_empty() { t!("Verbonden met FM27.", "Connected to FM27.", "Conectado ao FM27.").into() } else { s.message };
                     self.status_error = s.error;
                 }
             }
@@ -473,7 +480,7 @@ impl LiveState {
                         let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("?").to_string();
                         self.sell.status = t!(
                             format!("{} is gekocht van {} en staat in je selectie. Klopt er iets niet? Gebruik Ongedaan maken voordat je opslaat.", s("player"), s("from")),
-                            format!("{} has been bought from {} and is in your squad. Something wrong? Use Undo before you save.", s("player"), s("from"))
+                            format!("{} has been bought from {} and is in your squad. Something wrong? Use Undo before you save.", s("player"), s("from")), format!("{} foi comprado do {} e está no seu elenco. Algo errado? Use Desfazer antes de salvar.", s("player"), s("from"))
                         );
                         self.sell.error = false;
                         self.sell.plan = None;
@@ -487,7 +494,7 @@ impl LiveState {
                         let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("?").to_string();
                         self.sell.status = t!(
                             format!("{} is verkocht aan {}. Klopt er iets niet? Gebruik Ongedaan maken voordat je opslaat.", s("player"), s("to")),
-                            format!("{} has been sold to {}. Something wrong? Use Undo before you save.", s("player"), s("to"))
+                            format!("{} has been sold to {}. Something wrong? Use Undo before you save.", s("player"), s("to")), format!("{} foi vendido para {}. Algo errado? Use Desfazer antes de salvar.", s("player"), s("to"))
                         );
                         self.sell.error = false;
                         self.sell.plan = None;
@@ -519,10 +526,10 @@ impl LiveState {
                                 let text = if auto {
                                     t!(
                                         format!("Week van {date}: {} dagen teruggezet naar je plan (FM had de week opnieuw ingepland).", w.written),
-                                        format!("Week of {date}: {} days put back on plan (FM had re-planned the week).", w.written)
+                                        format!("Week of {date}: {} days put back on plan (FM had re-planned the week).", w.written), format!("Semana de {date}: {} dias devolvidos ao plano (o FM tinha replanejado a semana).", w.written)
                                     )
                                 } else {
-                                    t!(format!("Week van {date}: {} dagen in FM gezet.", w.written), format!("Week of {date}: {} days written into FM.", w.written))
+                                    t!(format!("Week van {date}: {} dagen in FM gezet.", w.written), format!("Week of {date}: {} days written into FM.", w.written), format!("Semana de {date}: {} dias escritos no FM.", w.written))
                                 };
                                 self.log.insert(0, LogEntry { at: chrono::Local::now(), text, auto });
                             }
@@ -531,11 +538,11 @@ impl LiveState {
                         }
                         if !auto {
                             self.train_status = if !wrote {
-                                t!("Plan klaar. Groen = wordt aangepast.", "Plan ready. Green = will change.").into()
+                                t!("Plan klaar. Groen = wordt aangepast.", "Plan ready. Green = will change.", "Plano pronto. Verde = vai mudar.").into()
                             } else if o.written_days == 0 {
-                                t!("Alles staat al volgens plan.", "Everything already follows the plan.").into()
+                                t!("Alles staat al volgens plan.", "Everything already follows the plan.", "Tudo já segue o plano.").into()
                             } else {
-                                t!(format!("{} dagen in FM gezet.", o.written_days), format!("{} days written into FM.", o.written_days))
+                                t!(format!("{} dagen in FM gezet.", o.written_days), format!("{} days written into FM.", o.written_days), format!("{} dias escritos no FM.", o.written_days))
                             };
                             self.train_error = false;
                         }
