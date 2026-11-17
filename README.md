@@ -19,6 +19,7 @@
 
 <p align="center">
   <a href="README.nl.md">Nederlands</a> ·
+  <a href="README.pt.md">Português</a> ·
   <a href="#features">Features</a> ·
   <a href="#install">Install</a> ·
   <a href="#how-it-works">How it works</a> ·
@@ -78,7 +79,7 @@ live on the Mac; on Windows only in simulation so far.
 
 **Planning and export.** Week and season plans as HTML (printable), CSV and JSON, even without the live module.
 
-**English and Dutch.** Follows your system language; switch any time in the sidebar.
+**English, Dutch and Portuguese.** Follows your system language; switch any time in the sidebar. Money can be shown in euro or Brazilian real (Settings → Currency).
 
 ## Install
 
@@ -128,7 +129,7 @@ More detail, including memory layouts and file formats: [docs/TECHNICAL.md](docs
   untested build (after an FM patch, until the new layout has been checked) it is read-only until you allow changes
   in Settings.
 - **Undo** for every change, and **Back up saves** with one click (`~/Documents/FM27 Trainer/backups`).
-- Nothing leaves your machine: no account, no telemetry, no network calls.
+- Nothing about you leaves your machine: no account, no telemetry. The only network call is fetching the current GBP→EUR/BRL exchange rate at startup (ECB data via frankfurter.dev, fallback open.er-api.com); no data is sent.
 
 ## Build from source
 

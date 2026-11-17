@@ -37,7 +37,7 @@ fn session_cell(name: &str) -> String {
 }
 
 fn week_table(p: &WeekPlan) -> String {
-    let mut h = format!("<table class=\"wk\"><thead><tr><th>{}</th><th>{}</th><th>Session 1</th><th>Session 2</th><th>Extra</th></tr></thead><tbody>", crate::t!("dag", "day"), crate::t!("type", "type"));
+    let mut h = format!("<table class=\"wk\"><thead><tr><th>{}</th><th>{}</th><th>Session 1</th><th>Session 2</th><th>Extra</th></tr></thead><tbody>", crate::t!("dag", "day", "dia"), crate::t!("type", "type", "tipo"));
     for (i, d) in p.days.iter().enumerate() {
         let _ = write!(
             h,
@@ -97,7 +97,7 @@ fn effectiveness_cards(eff: &Effectiveness) -> String {
             h,
             "<div class=\"card\"><h3>{}</h3><div class=\"f\"><span>{}</span><b>{:.0}</b></div><div class=\"bar\"><i style=\"width:{:.0}%;background:{}\"></i></div>",
             c.label(),
-            crate::t!("onderdeel", "component"),
+            crate::t!("onderdeel", "component", "componente"),
             v,
             v,
             rgb(level_color(v))
@@ -163,7 +163,7 @@ pub fn html_report(title: &str, eff: &Effectiveness, plans: &[WeekPlan]) -> Stri
     let _ = write!(
         h,
         "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{}</style></head><body><main>",
-        crate::t!("nl", "en"),
+        crate::t!("nl", "en", "pt-BR"),
         esc(title),
         CSS
     );
@@ -171,18 +171,18 @@ pub fn html_report(title: &str, eff: &Effectiveness, plans: &[WeekPlan]) -> Stri
         h,
         "<h1>{}</h1><p class=\"sub\">{} {} · {}: {} · {} {}</p>",
         esc(title),
-        crate::t!("Gemaakt", "Created"),
+        crate::t!("Gemaakt", "Created", "Criado em"),
         chrono::Local::now().format("%d-%m-%Y %H:%M"),
-        crate::t!("bron", "source"),
+        crate::t!("bron", "source", "fonte"),
         esc(&eff.source),
         plans.len(),
-        crate::t!("weken", "weeks")
+        crate::t!("weken", "weeks", "semanas")
     );
 
-    h.push_str(crate::t!("<h2>Tactical Effectiveness nu</h2>", "<h2>Tactical Effectiveness now</h2>"));
+    h.push_str(crate::t!("<h2>Tactical Effectiveness nu</h2>", "<h2>Tactical Effectiveness now</h2>", "<h2>Eficácia Tática agora</h2>"));
     h.push_str(&effectiveness_cards(eff));
 
-    h.push_str(crate::t!("<h2>Prioriteiten</h2><div class=\"card\"><table><tbody>", "<h2>Priorities</h2><div class=\"card\"><table><tbody>"));
+    h.push_str(crate::t!("<h2>Prioriteiten</h2><div class=\"card\"><table><tbody>", "<h2>Priorities</h2><div class=\"card\"><table><tbody>", "<h2>Prioridades</h2><div class=\"card\"><table><tbody>"));
     for (f, v) in eff.weakest().into_iter().take(8) {
         let _ = write!(
             h,
@@ -196,14 +196,14 @@ pub fn html_report(title: &str, eff: &Effectiveness, plans: &[WeekPlan]) -> Stri
     h.push_str("</tbody></table></div>");
 
     if plans.len() > 1 {
-        h.push_str(crate::t!("<h2>Geschatte ontwikkeling</h2><div class=\"card\">", "<h2>Projected development</h2><div class=\"card\">"));
+        h.push_str(crate::t!("<h2>Geschatte ontwikkeling</h2><div class=\"card\">", "<h2>Projected development</h2><div class=\"card\">", "<h2>Evolução projetada</h2><div class=\"card\">"));
         h.push_str(&projection_svg(plans, eff));
-        h.push_str(crate::t!("<p class=\"note\">Grove schatting (winst per sessie, verval als een gebied niet getraind wordt). Lees de Breakdown elke 2–4 weken opnieuw uit en maak het plan opnieuw.</p></div>", "<p class=\"note\">Rough estimate (gain per session, decay when an area is not trained). Re-read the Breakdown every 2–4 weeks and regenerate the plan.</p></div>"));
+        h.push_str(crate::t!("<p class=\"note\">Grove schatting (winst per sessie, verval als een gebied niet getraind wordt). Lees de Breakdown elke 2–4 weken opnieuw uit en maak het plan opnieuw.</p></div>", "<p class=\"note\">Rough estimate (gain per session, decay when an area is not trained). Re-read the Breakdown every 2–4 weeks and regenerate the plan.</p></div>", "<p class=\"note\">Estimativa aproximada (ganho por sessão, queda quando uma área não é treinada). Leia o Detalhamento de novo a cada 2–4 semanas e gere o plano outra vez.</p></div>"));
     }
 
     let uniq = unique_schedules(plans);
-    let _ = write!(h, "<h2>{} ({})</h2>", crate::t!("Weekschema's", "Weekly schedules"), uniq.len());
-    h.push_str(crate::t!("<p class=\"note\">Met de module zet FM27 Trainer deze schema's automatisch in je kalender. Zonder module: maak ze aan in FM (Training → Create new schedule).</p>", "<p class=\"note\">With the module, FM27 Trainer writes these schedules into your calendar automatically. Without it: create them in FM (Training → Create new schedule).</p>"));
+    let _ = write!(h, "<h2>{} ({})</h2>", crate::t!("Weekschema's", "Weekly schedules", "Programações semanais"), uniq.len());
+    h.push_str(crate::t!("<p class=\"note\">Met de module zet FM27 Trainer deze schema's automatisch in je kalender. Zonder module: maak ze aan in FM (Training → Create new schedule).</p>", "<p class=\"note\">With the module, FM27 Trainer writes these schedules into your calendar automatically. Without it: create them in FM (Training → Create new schedule).</p>", "<p class=\"note\">Com o módulo, o FM27 Trainer escreve essas programações no seu calendário automaticamente. Sem ele: crie-as no FM (Treino → Criar nova programação).</p>"));
     h.push_str(&legend());
     h.push_str("<div class=\"grid\" style=\"grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr))\">");
     for (name, dates, p) in &uniq {
@@ -216,8 +216,8 @@ pub fn html_report(title: &str, eff: &Effectiveness, plans: &[WeekPlan]) -> Stri
             p.kind.label(),
             p.focus,
             p.matches,
-            crate::t!("wedstrijd(en)", "match(es)"),
-            crate::t!("weken", "weeks"),
+            crate::t!("wedstrijd(en)", "match(es)", "jogo(s)"),
+            crate::t!("weken", "weeks", "semanas"),
             weeks.join(", "),
             more,
             week_table(p)
@@ -225,7 +225,7 @@ pub fn html_report(title: &str, eff: &Effectiveness, plans: &[WeekPlan]) -> Stri
     }
     h.push_str("</div>");
 
-    h.push_str(crate::t!("<h2>Kalender</h2><div class=\"card scroll\"><table class=\"cal\"><thead><tr><th>week van</th><th>periode</th><th>wedstrijden</th><th>focus</th><th>schema</th><th>tactische sessies</th></tr></thead><tbody>", "<h2>Calendar</h2><div class=\"card scroll\"><table class=\"cal\"><thead><tr><th>week of</th><th>period</th><th>matches</th><th>focus</th><th>schedule</th><th>tactical sessions</th></tr></thead><tbody>"));
+    h.push_str(crate::t!("<h2>Kalender</h2><div class=\"card scroll\"><table class=\"cal\"><thead><tr><th>week van</th><th>periode</th><th>wedstrijden</th><th>focus</th><th>schema</th><th>tactische sessies</th></tr></thead><tbody>", "<h2>Calendar</h2><div class=\"card scroll\"><table class=\"cal\"><thead><tr><th>week of</th><th>period</th><th>matches</th><th>focus</th><th>schedule</th><th>tactical sessions</th></tr></thead><tbody>", "<h2>Calendário</h2><div class=\"card scroll\"><table class=\"cal\"><thead><tr><th>semana de</th><th>período</th><th>jogos</th><th>foco</th><th>programação</th><th>sessões táticas</th></tr></thead><tbody>"));
     for p in plans {
         let mut m = String::new();
         for (i, d) in p.days.iter().enumerate() {
@@ -248,19 +248,19 @@ pub fn html_report(title: &str, eff: &Effectiveness, plans: &[WeekPlan]) -> Stri
 
     if let Some(p) = plans.first() {
         if !p.notes.is_empty() {
-            h.push_str(crate::t!("<h2>Buiten de training</h2><div class=\"card\"><ul>", "<h2>Beyond training</h2><div class=\"card\"><ul>"));
+            h.push_str(crate::t!("<h2>Buiten de training</h2><div class=\"card\"><ul>", "<h2>Beyond training</h2><div class=\"card\"><ul>", "<h2>Além do treino</h2><div class=\"card\"><ul>"));
             for n in &p.notes {
                 let _ = write!(h, "<li>{}</li>", esc(n));
             }
             h.push_str("</ul></div>");
         }
     }
-    h.push_str(crate::t!("<p class=\"note\" style=\"margin-top:30px\">Sessienamen en limieten komen uit de game-data van FM27. Het ritme rond wedstrijden volgt de presets van Sports Interactive.</p></main></body></html>", "<p class=\"note\" style=\"margin-top:30px\">Session names and limits come from FM27's game data. The rhythm around matches follows Sports Interactive's presets.</p></main></body></html>"));
+    h.push_str(crate::t!("<p class=\"note\" style=\"margin-top:30px\">Sessienamen en limieten komen uit de game-data van FM27. Het ritme rond wedstrijden volgt de presets van Sports Interactive.</p></main></body></html>", "<p class=\"note\" style=\"margin-top:30px\">Session names and limits come from FM27's game data. The rhythm around matches follows Sports Interactive's presets.</p></main></body></html>", "<p class=\"note\" style=\"margin-top:30px\">Os nomes e limites das sessões vêm dos dados do FM27. O ritmo em torno dos jogos segue as predefinições da Sports Interactive.</p></main></body></html>"));
     h
 }
 
 pub fn csv(plans: &[WeekPlan]) -> String {
-    let mut s = String::from(crate::t!("datum,dag,periode,type,sessie1,sessie2,extra,schema\n", "date,day,period,type,session1,session2,extra,schedule\n"));
+    let mut s = String::from(crate::t!("datum,dag,periode,type,sessie1,sessie2,extra,schema\n", "date,day,period,type,session1,session2,extra,schedule\n", "data,dia,periodo,tipo,sessao1,sessao2,extra,programacao\n"));
     for p in plans {
         for (i, d) in p.days.iter().enumerate() {
             let _ = writeln!(

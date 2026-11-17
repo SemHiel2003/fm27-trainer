@@ -38,13 +38,13 @@ impl WeekKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            WeekKind::PreSeasonEarly => crate::t!("Voorbereiding (begin)", "Pre-season (early)"),
-            WeekKind::PreSeasonMid => crate::t!("Voorbereiding (midden)", "Pre-season (mid)"),
-            WeekKind::PreSeasonLate => crate::t!("Voorbereiding (eind)", "Pre-season (late)"),
-            WeekKind::Season => crate::t!("Seizoen", "Season"),
-            WeekKind::InternationalBreak => crate::t!("Interlandperiode", "International break"),
-            WeekKind::WinterBreak => crate::t!("Winterstop", "Winter break"),
-            WeekKind::OffSeason => crate::t!("Vakantie", "Off-season"),
+            WeekKind::PreSeasonEarly => crate::t!("Voorbereiding (begin)", "Pre-season (early)", "Pré-temporada (início)"),
+            WeekKind::PreSeasonMid => crate::t!("Voorbereiding (midden)", "Pre-season (mid)", "Pré-temporada (meio)"),
+            WeekKind::PreSeasonLate => crate::t!("Voorbereiding (eind)", "Pre-season (late)", "Pré-temporada (fim)"),
+            WeekKind::Season => crate::t!("Seizoen", "Season", "Temporada"),
+            WeekKind::InternationalBreak => crate::t!("Interlandperiode", "International break", "Data FIFA"),
+            WeekKind::WinterBreak => crate::t!("Winterstop", "Winter break", "Pausa de inverno"),
+            WeekKind::OffSeason => crate::t!("Vakantie", "Off-season", "Entressafra"),
         }
     }
 
@@ -83,13 +83,13 @@ pub enum DayRole {
 impl DayRole {
     pub fn label(self) -> &'static str {
         match self {
-            DayRole::Match => crate::t!("Wedstrijd", "Match day"),
-            DayRole::PostMatch => crate::t!("Dag na wedstrijd", "Day after match"),
-            DayRole::PreMatch => crate::t!("Dag voor wedstrijd", "Day before match"),
-            DayRole::PostAndPreMatch => crate::t!("Tussen 2 wedstrijden", "Between matches"),
-            DayRole::Training => crate::t!("Trainingsdag", "Training day"),
-            DayRole::Recovery => crate::t!("Herstel", "Recovery"),
-            DayRole::Holiday => crate::t!("Vrij", "Day off"),
+            DayRole::Match => crate::t!("Wedstrijd", "Match day", "Dia de jogo"),
+            DayRole::PostMatch => crate::t!("Dag na wedstrijd", "Day after match", "Dia após o jogo"),
+            DayRole::PreMatch => crate::t!("Dag voor wedstrijd", "Day before match", "Dia antes do jogo"),
+            DayRole::PostAndPreMatch => crate::t!("Tussen 2 wedstrijden", "Between matches", "Entre jogos"),
+            DayRole::Training => crate::t!("Trainingsdag", "Training day", "Dia de treino"),
+            DayRole::Recovery => crate::t!("Herstel", "Recovery", "Recuperação"),
+            DayRole::Holiday => crate::t!("Vrij", "Day off", "Folga"),
         }
     }
 }
@@ -224,7 +224,7 @@ pub fn default_calendar(opts: &CalendarOptions) -> Vec<CalendarWeek> {
                     if euro_week && euro_count < 14 {
                         matches[idx(eday)] = true;
                         euro_count += 1;
-                        note = crate::t!("Europees", "Europe").into();
+                        note = crate::t!("Europees", "Europe", "Europa").into();
                     }
                 }
                 // Beker: midweek in okt, dec, jan, feb, apr
@@ -233,7 +233,7 @@ pub fn default_calendar(opts: &CalendarOptions) -> Vec<CalendarWeek> {
                     if cup_week && cup_count < 5 {
                         matches[idx(Weekday::Wed)] = true;
                         cup_count += 1;
-                        note = crate::t!("Beker", "Cup").into();
+                        note = crate::t!("Beker", "Cup", "Copa").into();
                     }
                 }
             }
