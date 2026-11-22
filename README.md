@@ -111,6 +111,12 @@ Step by step, with what to do when the app does not connect: **[Getting started 
 > by itself) but is read-only until the new build has been checked; you can allow changes yourself in Settings
 > (back up your save first).
 
+### Linux (Steam Proton)
+
+The Windows build runs inside FM27's Proton session, with a small helper for reading the Breakdown
+(screen capture + Tesseract). Set up once with a Steam launch option; FM27 Trainer then opens and closes with
+FM27. See **[Linux guide](docs/LINUX.md)**.
+
 ## How it works
 
 | Part | What it does |

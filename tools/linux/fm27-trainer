@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Runs FM27 Trainer (the Windows build) inside FM27's running Proton session, so it can reach
+# fm.exe the way it does on Windows (see docs/LINUX.md). FM27 must have been started with
+# fm27-launch as its Steam launch option.
+#   fm27-trainer          start it now (FM27 must be running)
+#   fm27-trainer --wait   wait up to 3 minutes for FM27 first (fm27-launch uses this)
+# FM27_TRAINER_EXE sets where the exe is, as a Windows path inside FM27's prefix
+# (default C:\FM27Trainer\FM27 Trainer.exe).
+set -u
+APPID=4530370
+EXE="${FM27_TRAINER_EXE:-C:\\FM27Trainer\\FM27 Trainer.exe}"
+LOG="${XDG_CACHE_HOME:-$HOME/.cache}/fm27-trainer.log"
+
+say() { command -v notify-send >/dev/null && notify-send -a "FM27 Trainer" "FM27 Trainer" "$1"; echo "$1" >&2; }
+fm_running() { ps -eo comm= | grep -qix 'fm.exe'; }
+trainer_running() {
+  local p
+  for p in /proc/[0-9]*; do
+    tr '\0' '\n' <"$p/cmdline" 2>/dev/null | head -n1 | grep -qi '^[a-z]:\\.*fm27 trainer\.exe$' && return 0
+  done
+  return 1
+}
+
+client=""
+for root in "$HOME/.local/share/Steam" "$HOME/.steam/steam" "$HOME/.var/app/com.valvesoftware.Steam/data/Steam"; do
+  for c in "$root"/steamapps/common/SteamLinuxRuntime_*/pressure-vessel/bin/steam-runtime-launch-client; do
+    [ -x "$c" ] && client="$c"
+  done
+done
+[ -n "$client" ] || { say "steam-runtime-launch-client not found (Steam Linux Runtime missing?)"; exit 1; }
+
+if [ "${1:-}" = "--wait" ]; then
+  for _ in $(seq 1 180); do fm_running && break; sleep 1; done
+fi
+if ! fm_running; then
+  say "Start FM27 from Steam first, then FM27 Trainer."
+  exit 1
+fi
+if trainer_running; then
+  [ "${1:-}" = "--wait" ] || say "FM27 Trainer is already open."
+  exit 0
+fi
+
+# FM's launcher service comes up a few seconds after fm.exe
+for _ in $(seq 1 60); do
+  "$client" --inside-app="$APPID" -- true >/dev/null 2>&1 && break
+  sleep 1
+done
+if ! "$client" --inside-app="$APPID" -- true >/dev/null 2>&1; then
+  say "Can't reach FM27's Proton session: set FM27's Steam launch options to  $(dirname "$(readlink -f "$0")")/fm27-launch %command%  and restart FM27."
+  exit 1
+fi
+
+mkdir -p "$(dirname "$LOG")"
+echo "=== $(date '+%F %T') $EXE" >>"$LOG"
+exec "$client" --inside-app="$APPID" -- wine "$EXE" >>"$LOG" 2>&1

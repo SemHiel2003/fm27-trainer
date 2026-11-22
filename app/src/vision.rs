@@ -76,8 +76,111 @@ impl Analysis {
 pub fn capture_fm_window() -> Result<RgbaImage> {
     #[cfg(target_os = "macos")]
     return mac_capture::capture();
+    #[cfg(windows)]
+    if wine_bridge::active() {
+        return wine_bridge::capture();
+    }
     #[cfg(not(target_os = "macos"))]
     capture_fm_window_xcap()
+}
+
+/// Linux (Steam Proton): de Windows-app draait dan in de Wine-prefix van FM27. Daar geeft het
+/// vastleggen van het venster een zwart beeld (FM tekent via Vulkan) en bestaat Windows.Media.Ocr
+/// niet. Een hulpje op de Linux-kant (`tools/linux/fm27-ocr-bridge`) doet dan de opname (grim) en
+/// de OCR (Tesseract); de app en het hulpje praten via bestanden in `<app-map>\linux-bridge`. Alleen
+/// in gebruik zolang het hulpje daar elke 2 s `host.alive` bijwerkt: op Windows verandert niets.
+#[cfg(windows)]
+pub mod wine_bridge {
+    use super::OcrLine;
+    use anyhow::{Context, Result, anyhow, bail};
+    use image::RgbaImage;
+    use serde_json::{Value, json};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant, SystemTime};
+
+    pub fn dir() -> PathBuf {
+        crate::data_dir().join("linux-bridge")
+    }
+
+    /// Of het hulpje draait: `host.alive` is minder dan 15 s oud.
+    pub fn active() -> bool {
+        let Ok(t) = std::fs::metadata(dir().join("host.alive")).and_then(|m| m.modified()) else { return false };
+        SystemTime::now().duration_since(t).map(|d| d.as_secs() < 15).unwrap_or(true)
+    }
+
+    fn new_id() -> String {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        format!("{}-{}-{}", std::process::id(), nanos % 1_000_000_000, N.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Schrijft `req-<id>.json` (via een tijdelijk bestand, zodat het hulpje nooit een half
+    /// verzoek leest) en wacht op `res-<id>.json`.
+    fn request(id: &str, mut req: Value, timeout: Duration) -> Result<Value> {
+        let d = dir();
+        req["id"] = json!(id);
+        let tmp = d.join(format!("req-{id}.tmp"));
+        let path = d.join(format!("req-{id}.json"));
+        std::fs::write(&tmp, serde_json::to_vec(&req)?).context("linux-bridge")?;
+        std::fs::rename(&tmp, &path).context("linux-bridge")?;
+        let res = d.join(format!("res-{id}.json"));
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(bytes) = std::fs::read(&res) {
+                let _ = std::fs::remove_file(&res);
+                let v: Value = serde_json::from_slice(&bytes).context("linux-bridge")?;
+                if v["ok"].as_bool() == Some(true) {
+                    return Ok(v);
+                }
+                bail!("fm27-ocr-bridge: {}", v["error"].as_str().unwrap_or("?"));
+            }
+            if Instant::now() > deadline {
+                let _ = std::fs::remove_file(&path);
+                bail!("{}", crate::t!("Het Linux-hulpje (fm27-ocr-bridge) antwoordt niet.", "The Linux helper (fm27-ocr-bridge) does not answer."));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    pub fn capture() -> Result<RgbaImage> {
+        let v = request(&new_id(), json!({ "op": "capture" }), Duration::from_secs(15))?;
+        let name = v["image"].as_str().ok_or_else(|| anyhow!("fm27-ocr-bridge: geen beeld"))?;
+        let path = dir().join(Path::new(name).file_name().unwrap_or_default());
+        let img = image::open(&path).with_context(|| path.display().to_string())?.to_rgba8();
+        let _ = std::fs::remove_file(&path);
+        if img.width() < 200 {
+            bail!("{}", crate::t!("Vastgelegd beeld is leeg.", "Captured image is empty."));
+        }
+        Ok(img)
+    }
+
+    pub fn ocr(img: &RgbaImage) -> Result<(Vec<OcrLine>, String)> {
+        let id = new_id();
+        let name = format!("ocr-{id}.png");
+        let path = dir().join(&name);
+        img.save(&path).context("linux-bridge")?;
+        let res = request(&id, json!({ "op": "ocr", "image": name }), Duration::from_secs(60));
+        let _ = std::fs::remove_file(&path);
+        let v = res?;
+        let f = |l: &Value, k: &str| l[k].as_f64().unwrap_or(0.0) as f32;
+        let lines = v["lines"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|l| OcrLine {
+                        text: l["text"].as_str().unwrap_or_default().to_string(),
+                        x0: f(l, "x0"),
+                        y0: f(l, "y0"),
+                        x1: f(l, "x1"),
+                        y1: f(l, "y1"),
+                        confidence: f(l, "confidence"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok((lines, v["lang"].as_str().unwrap_or("Tesseract").to_string()))
+    }
 }
 
 /// De vensters die de Mac-opname ziet (diagnose: `fm27-trainer windows`).
@@ -349,6 +452,9 @@ mod platform {
     }
 
     pub fn languages() -> Vec<String> {
+        if super::wine_bridge::active() {
+            return vec!["eng (Tesseract)".into()];
+        }
         init();
         let Ok(list) = OcrEngine::AvailableRecognizerLanguages() else { return Vec::new() };
         list.into_iter().filter_map(|l| l.LanguageTag().ok()).map(|t| t.to_string()).collect()
@@ -380,6 +486,9 @@ mod platform {
     }
 
     pub fn ocr(img: &RgbaImage, lang: Option<&str>) -> Result<(Vec<OcrLine>, String)> {
+        if super::wine_bridge::active() {
+            return super::wine_bridge::ocr(img);
+        }
         init();
         let engine = engine(lang)?;
         let tag = engine.RecognizerLanguage().and_then(|l| l.LanguageTag()).map(|t| t.to_string()).unwrap_or_default();
