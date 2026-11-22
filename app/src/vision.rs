@@ -1056,9 +1056,13 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, yc: f32, col
 /// Welk deel van een taart (0–1) bij de kleur van de vulling past. FM kleurt een meter naar zijn
 /// niveau (gemeten op 2560×1440, Ajax- en Sunderland-save): 20–40 % oranje (tint ~43°), 50–70 %
 /// geel (~60°), 90 % groen (~120°); 40 % kan ook geel zijn. De grenzen hier zijn ruim genomen.
+///
+/// Op Steam 26620374 (17 nov 2026) volgt de kleur het niveau minder strak: in één save was een
+/// meter op 70 % oranje (tint ~32°), stonden meters op 40 % rood-oranje (~17°) en liepen meters op
+/// 50 % van oranje (~32°) tot geel (~64°). Oranje en rood mogen daarom tot 80 %.
 fn color_band(hue: f32) -> (f32, f32) {
     if hue < 50.0 {
-        (0.0, 0.5)
+        (0.0, 0.8)
     } else if hue < 90.0 {
         (0.3, 0.9)
     } else {
@@ -1247,6 +1251,25 @@ pub fn analyze_image(img: &RgbaImage) -> Result<(Analysis, Vec<OcrLine>)> {
     Ok(best)
 }
 
+/// Vult `a` aan uit `other` (een andere meting van dezelfde opname): een meter die in `a` ontbreekt
+/// of twijfel heeft, komt uit `other` als die hem zonder twijfel las, en een ontbrekende balk ook.
+fn merge_readings(a: &mut Analysis, other: &Analysis) {
+    for g in &other.gauges {
+        match a.gauges.iter_mut().find(|x| x.factor == g.factor) {
+            Some(x) if x.doubt && !g.doubt => *x = g.clone(),
+            Some(_) => {}
+            None => a.gauges.push(g.clone()),
+        }
+    }
+    a.missing.retain(|f| !a.gauges.iter().any(|g| g.factor == *f));
+    for (c, v) in &other.components {
+        if !a.components.iter().any(|(x, _)| x == c) {
+            a.components.push((*c, *v));
+        }
+    }
+    a.labels = a.labels.max(other.labels);
+}
+
 fn analyze_in(img: &RgbaImage, lang: Option<&str>) -> Result<(Analysis, Vec<OcrLine>)> {
     let (lines, tag) = ocr(img, lang)?;
     let mut first = analyze_with_lines(img, &lines);
@@ -1277,9 +1300,12 @@ fn analyze_in(img: &RgbaImage, lang: Option<&str>) -> Result<(Analysis, Vec<OcrL
         // meting die nagekeken moet worden (kleur past niet, of 0) telt niet als gelezen
         let score = |a: &Analysis| (a.gauges.iter().filter(|g| !g.doubt).count() + a.components.len(), a.gauges.len());
         let better = score(&a2) >= score(&best.0);
-        if better {
-            best = (a2, lines2);
-        }
+        // Per waarde, niet per meting: met kleine tekst in FM worden de balken vaak alleen op de
+        // referentiegrootte gevonden, terwijl een meter op ware grootte goed en na het schalen fout
+        // kan uitkomen (of andersom). De winnende meting blijft, aangevuld uit de andere.
+        let (mut win, other) = if better { ((a2, lines2), best.0) } else { (best, a2) };
+        merge_readings(&mut win.0, &other);
+        best = win;
     }
     Ok(best)
 }
@@ -1314,7 +1340,15 @@ pub fn analyze_with_lines(img: &RgbaImage, lines: &[OcrLine]) -> Analysis {
         if std::env::var_os("FM27_VISION_DEBUG").is_some() {
             eprintln!("label {:<34} regel {:?} eind {label_end:.0} zoek {:.0}..{limit:.0} y {:.0} th {th:.0}", f.label(), line.text, label_end + th * 0.4, line.yc());
         }
-        match find_pie(img, label_end + th * 0.4, limit, line.yc(), th) {
+        let mut found = find_pie(img, label_end + th * 0.4, limit, line.yc(), th);
+        // Een meter die tot aan het eind van het zoekgebied loopt, is afgesneden (een kort label in
+        // een breed paneel, kleine tekst in FM): dan iets verder zoeken. Afgesneden las hij te laag
+        // (Line of Engagement 30 of 0 in plaats van 40).
+        if found.as_ref().is_some_and(|g| g.bbox[2] as f32 >= limit - 1.0) && limit < next_label_x {
+            let wider = (limit + th * 3.0).min(next_label_x);
+            found = find_pie(img, label_end + th * 0.4, wider, line.yc(), th).or(found);
+        }
+        match found {
             Some(g) => {
                 let (score, doubt) = gauge_score(g.fill, g.hue, g.fill > 0.0);
                 gauges.push(GaugeReading { factor: f, score, fill: g.fill, hue: g.hue, bbox: g.bbox, doubt });
@@ -1663,6 +1697,76 @@ mod tests {
         assert!(wrong.is_empty(), "verkeerd gelezen:\n{}", wrong.join("\n"));
     }
 
+    /// Opname van de Steam-build van 17 nov 2026 (26620374), 2560×1440 met kleine tekst in FM
+    /// (labels ~14 px): het paneel Tactical Understanding, met de OCR-regels zoals Tesseract ze
+    /// las. Line of Engagement is een kort label in een breed paneel: het zoekgebied (22 × de
+    /// teksthoogte) hield midden in de meter op, waardoor hij 30 of 0 las. Tactical Complexity staat
+    /// op 70 % en is oranje (tint ~32°): dat werd als twijfel naar 50 gezet.
+    #[test]
+    fn small_text_steam_26620374() {
+        let img = image::load_from_memory(include_bytes!("../testdata/breakdown_tu_steam26620374.png")).unwrap().to_rgba8();
+        let js: serde_json::Value = serde_json::from_slice(include_bytes!("../testdata/breakdown_tu_steam26620374.json")).unwrap();
+        let f = |l: &serde_json::Value, k: &str| l[k].as_f64().unwrap() as f32;
+        let lines: Vec<OcrLine> = js
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| OcrLine { text: l["text"].as_str().unwrap().into(), x0: f(l, "x0"), y0: f(l, "y0"), x1: f(l, "x1"), y1: f(l, "y1"), confidence: 1.0 })
+            .collect();
+        let a = analyze_with_lines(&img, &lines);
+        let want = [
+            (Factor::InPossessionShape, 50),
+            (Factor::PassingStyle, 50),
+            (Factor::BuildUp, 40),
+            (Factor::ChanceCreation, 50),
+            (Factor::OutOfPossessionShape, 40),
+            (Factor::LineOfEngagement, 40),
+            (Factor::PressingIntensity, 40),
+            (Factor::PressingTrap, 50),
+            (Factor::PlayerTacticalAbility, 50),
+            (Factor::TacticalComplexity, 70),
+        ];
+        let mut wrong = Vec::new();
+        for (factor, score) in want {
+            match a.gauges.iter().find(|g| g.factor == factor) {
+                // de meter heel: zo breed als hoog (afgesneden las hij soms toevallig goed)
+                Some(g) if g.score.round() as u32 == score && !g.doubt && (g.bbox[2] - g.bbox[0]) * 10 >= (g.bbox[3] - g.bbox[1]) * 9 => {}
+                got => wrong.push(format!("{factor:?}: verwacht {score}, gelezen {:?}", got.map(|g| (g.score, g.doubt, g.bbox)))),
+            }
+        }
+        assert!(wrong.is_empty(), "verkeerd gelezen:\n{}", wrong.join("\n"));
+    }
+
+    /// Twee metingen van dezelfde opname (eigen grootte en referentiegrootte) worden per waarde
+    /// samengevoegd: een meter met twijfel of een ontbrekende meter of balk komt uit de andere.
+    #[test]
+    fn readings_are_merged_per_value() {
+        let g = |factor, score: f32, doubt| GaugeReading { factor, score, fill: score / 100.0, hue: 40.0, bbox: [0; 4], doubt };
+        let analysis = |gauges: Vec<GaugeReading>, components: Vec<(Component, f32)>| Analysis {
+            gauges,
+            components,
+            missing: Vec::new(),
+            image_size: (100, 100),
+            lang: "english",
+            labels: 21,
+            ocr: String::new(),
+            text_height: Some(20.0),
+        };
+        let mut a = analysis(vec![g(Factor::BuildUp, 40.0, false), g(Factor::LineOfEngagement, 0.0, true)], vec![(Component::PlayerAbility, 30.0)]);
+        a.missing.push(Factor::PressingTrap);
+        let other = analysis(
+            vec![g(Factor::BuildUp, 50.0, false), g(Factor::LineOfEngagement, 40.0, false), g(Factor::PressingTrap, 50.0, false)],
+            vec![(Component::PlayerAbility, 70.0), (Component::TacticalUnderstanding, 30.0)],
+        );
+        merge_readings(&mut a, &other);
+        let score = |f| a.gauges.iter().find(|g| g.factor == f).map(|g| (g.score, g.doubt));
+        assert_eq!(score(Factor::BuildUp), Some((40.0, false)), "een goede meting blijft staan");
+        assert_eq!(score(Factor::LineOfEngagement), Some((40.0, false)), "twijfel wordt vervangen");
+        assert_eq!(score(Factor::PressingTrap), Some((50.0, false)), "ontbrekend wordt aangevuld");
+        assert!(a.missing.is_empty());
+        assert_eq!(a.components, vec![(Component::PlayerAbility, 30.0), (Component::TacticalUnderstanding, 30.0)]);
+    }
+
     /// Grotere tekst in FM (of een kleinere rijafstand): de zoekband rond een label reikt dan tot in
     /// de meters van de rij erboven en eronder. Elke meter moet zijn eigen waarde houden.
     #[test]
@@ -1697,8 +1801,10 @@ mod tests {
 
     #[test]
     fn colour_disagrees_with_fill() {
-        // een oranje meter (laag) die als 70 % gemeten wordt: naar de rand van oranje, en nakijken
-        assert_eq!(gauge_score(0.7, 43.0, true), (50.0, true));
+        // een oranje meter die als 90 % gemeten wordt: naar de rand van oranje, en nakijken
+        assert_eq!(gauge_score(0.9, 43.0, true), (80.0, true));
+        // Steam 26620374: Tactical Complexity op 70 % is oranje (tint ~32°)
+        assert_eq!(gauge_score(0.7, 32.0, true), (70.0, false));
         assert_eq!(gauge_score(0.4, 43.0, true), (40.0, false));
         assert_eq!(gauge_score(0.4, 59.0, true), (40.0, false), "40 % kan geel zijn (Ajax-save)");
         assert_eq!(gauge_score(0.9, 120.0, true), (90.0, false));
