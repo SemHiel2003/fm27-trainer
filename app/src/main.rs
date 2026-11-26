@@ -12,6 +12,8 @@ mod planner;
 mod tactics;
 mod theme;
 mod vision;
+#[cfg(windows)]
+mod wine;
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

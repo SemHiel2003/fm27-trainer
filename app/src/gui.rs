@@ -36,6 +36,9 @@ pub fn run() -> Result<()> {
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/icon_256.png")).unwrap_or_default()),
         ..Default::default()
     };
+    // Onder Wine/Proton: omweg voor de tekenteller-fout die de gebeurtenislus liet rondraaien (zie wine.rs)
+    #[cfg(windows)]
+    crate::wine::install();
     eframe::run_native(
         "FM27 Trainer",
         options,
