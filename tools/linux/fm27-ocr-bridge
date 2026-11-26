@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""Linux helper for FM27 Trainer under Steam Proton (see docs/LINUX.md).
+
+Inside FM27's Proton prefix the Windows app cannot capture FM's window (FM draws through Vulkan,
+the capture comes back black) and Wine has no Windows.Media.Ocr. The app then writes requests to
+<prefix>/drive_c/users/steamuser/AppData/Roaming/FM27 Trainer/linux-bridge and this helper answers
+them on the Linux side:
+
+  capture -> the FM27 window (Hyprland, sway or X11)
+  ocr     -> ImageMagick clean-up + Tesseract, returned as text lines with pixel boxes
+
+Usage:
+  fm27-ocr-bridge serve            answer requests until FM27 exits (fm27-launch starts this)
+  fm27-ocr-bridge ocr IMAGE [UPSCALE]  print what the OCR reads (testing)
+  fm27-ocr-bridge capture OUT.png  capture the FM27 window (testing; --auto: do not switch windows)
+
+Needs: tesseract (+ English data), ImageMagick 7 (`magick`), and grim (Wayland) or ImageMagick's
+`import` + xdotool (X11).
+"""
+import csv
+import fcntl
+import glob
+import io
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+APPID = "4530370"
+FM_TITLE = "Football Manager 27"
+UPSCALE = 2  # Tesseract reads FM's small UI text much better at 2x
+# ...but never feed it more than this many pixels across: the app already enlarges the image itself
+# when FM's text is small (1.5x / 2x passes), and a second 2x on top gave Tesseract 10240x5760 images
+# (4-6 s wall, 6-10 s CPU per pass) for no gain. 5120 is what 2x of a 2560x1440 window gives.
+MAX_OCR_WIDTH = 5120
+STEAM_ROOTS = ["~/.local/share/Steam", "~/.steam/steam", "~/.var/app/com.valvesoftware.Steam/data/Steam"]
+
+
+def log(msg):
+    print(time.strftime("%H:%M:%S"), msg, flush=True)
+
+
+def find_prefix():
+    """FM27's Proton prefix, in whichever Steam library FM27 is installed."""
+    libraries = []
+    for root in STEAM_ROOTS:
+        root = os.path.expanduser(root)
+        vdf = os.path.join(root, "steamapps", "libraryfolders.vdf")
+        if os.path.exists(vdf):
+            with open(vdf, encoding="utf-8", errors="replace") as f:
+                libraries += re.findall(r'"path"\s+"([^"]+)"', f.read())
+        libraries.append(root)
+    for lib in libraries:
+        pfx = os.path.join(lib, "steamapps", "compatdata", APPID, "pfx")
+        if os.path.isdir(pfx):
+            return pfx
+    raise SystemExit("FM27's Proton prefix (compatdata/%s) not found in any Steam library" % APPID)
+
+
+def bridge_dir():
+    return os.path.join(find_prefix(), "drive_c", "users", "steamuser", "AppData", "Roaming", "FM27 Trainer", "linux-bridge")
+
+
+def run(*cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+# ------------------------------------------------------------------ capture
+
+def grim(out_path, geometry):
+    # -l 0: stored (uncompressed) PNG, ~10x cheaper to write than the default level; the app decodes it fine
+    run("grim", "-l", "0", "-g", geometry, "-t", "png", out_path, check=True)
+
+
+def overlaps(a, b):
+    ax, ay = a["at"]
+    aw, ah = a["size"]
+    bx, by = b["at"]
+    bw, bh = b["size"]
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def capture_hyprland(out_path, auto=False):
+    clients = json.loads(run("hyprctl", "clients", "-j", check=True).stdout)
+    wins = [c for c in clients if c.get("class") == f"steam_app_{APPID}" and c.get("mapped", True)]
+    # FM27 Trainer and BepInEx's console share FM's window class: the game window is titled exactly
+    exact = [c for c in wins if c.get("title") == FM_TITLE]
+    if not exact:
+        raise RuntimeError("No Football Manager 27 window found. Is FM27 running?")
+    win = exact[0]
+    monitors = json.loads(run("hyprctl", "monitors", "-j", check=True).stdout)
+    active = json.loads(run("hyprctl", "activewindow", "-j").stdout or "{}")
+    on_screen = any(m["activeWorkspace"]["id"] == win["workspace"]["id"] for m in monitors)
+    covered = not (win.get("fullscreen") or active.get("address") == win["address"])
+    if auto:
+        # the automatic read never moves focus: FM must already be on screen. Only another window
+        # that is on top of it (floating, or fullscreen) is in the way; a tiled neighbour is not.
+        if not on_screen:
+            raise RuntimeError("FM is not on screen (automatic read does not switch windows)")
+        if covered and any(c["address"] != win["address"] and c["workspace"]["id"] == win["workspace"]["id"]
+                           and c.get("mapped", True) and not c.get("hidden") and (c.get("floating") or c.get("fullscreen"))
+                           and overlaps(c, win) for c in clients):
+            raise RuntimeError("FM is covered by another window (automatic read does not switch windows)")
+        covered = False
+    prev = active.get("address") if active.get("address") != win["address"] else None
+    switched = False
+    if not on_screen or covered:
+        # bring FM to the front for the capture, then give focus back
+        run("hyprctl", "dispatch", "focuswindow", f"address:{win['address']}")
+        switched = True
+        time.sleep(0.6)
+        win = next(c for c in json.loads(run("hyprctl", "clients", "-j", check=True).stdout) if c["address"] == win["address"])
+    try:
+        x, y = win["at"]
+        w, h = win["size"]
+        grim(out_path, f"{x},{y} {w}x{h}")
+    finally:
+        if switched and prev:
+            run("hyprctl", "dispatch", "focuswindow", f"address:{prev}")
+
+
+def capture_sway(out_path, auto=False):
+    tree = json.loads(run("swaymsg", "-t", "get_tree", "-r", check=True).stdout)
+    found = []
+
+    def walk(n):
+        if n.get("name") == FM_TITLE and n.get("pid"):
+            found.append(n)
+        for c in n.get("nodes", []) + n.get("floating_nodes", []):
+            walk(c)
+
+    walk(tree)
+    if not found:
+        raise RuntimeError("No Football Manager 27 window found. Is FM27 running?")
+    con = found[0]
+    if not con.get("visible"):
+        if auto:
+            raise RuntimeError("FM is not on screen (automatic read does not switch windows)")
+        run("swaymsg", f"[con_id={con['id']}]", "focus")
+        time.sleep(0.6)
+    r = con["rect"]
+    grim(out_path, f"{r['x']},{r['y']} {r['width']}x{r['height']}")
+
+
+def capture_x11(out_path, auto=False):
+    ids = run("xdotool", "search", "--name", f"^{FM_TITLE}$").stdout.split()
+    if not ids:
+        raise RuntimeError("No Football Manager 27 window found. Is FM27 running?")
+    wid = ids[0]
+    if auto:
+        if run("xdotool", "getwindowfocus").stdout.strip() != wid:
+            raise RuntimeError("FM is not in front (automatic read does not switch windows)")
+    else:
+        run("xdotool", "windowactivate", "--sync", wid)
+        time.sleep(0.4)
+    run("import", "-window", wid, out_path, check=True)
+
+
+def capture(out_path, auto=False):
+    """auto=True is the app's automatic read: it never changes focus, and fails when FM is not visible."""
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
+        capture_hyprland(out_path, auto)
+    elif os.environ.get("SWAYSOCK") and shutil.which("swaymsg"):
+        capture_sway(out_path, auto)
+    elif os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY") and shutil.which("xdotool"):
+        capture_x11(out_path, auto)
+    else:
+        raise RuntimeError("Capturing FM's window is supported on Hyprland, sway and X11. "
+                           "Elsewhere, take a screenshot of the Breakdown and use 'From file'.")
+
+
+# ------------------------------------------------------------------ OCR
+
+def png_width(path):
+    """Width of a PNG from its header (no decoding)."""
+    with open(path, "rb") as f:
+        head = f.read(24)
+    if head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR":
+        return int.from_bytes(head[16:20], "big")
+    return int(run("magick", "identify", "-format", "%w", path + "[0]", check=True).stdout)
+
+
+def pick_upscale(width, requested=None):
+    """How much to enlarge before Tesseract: UPSCALE (or what the request asks), but not so far that the
+    result is wider than MAX_OCR_WIDTH, and never a reduction."""
+    want = UPSCALE if requested is None else float(requested)
+    return max(1.0, min(want, MAX_OCR_WIDTH / max(1, width)))
+
+
+# Tesseract is OpenMP-parallel and spikes every core for a few seconds per pass; one thread costs far
+# less CPU in total (no spinning workers) and does not disturb the game.
+TESSERACT_ENV = dict(os.environ, OMP_THREAD_LIMIT="1", OMP_NUM_THREADS="1")
+
+
+def ocr(image_path, upscale=None):
+    up = pick_upscale(png_width(image_path), upscale)
+    with tempfile.TemporaryDirectory(prefix="fm27ocr-") as tmp:
+        prep = os.path.join(tmp, "prep.png")
+        # FM is light text on a dark UI: grey, upscale, stretch, invert -> dark text on light.
+        # The app sends RGBA PNGs: with the alpha channel left on, Tesseract reads nothing.
+        # (Tuned on a 2560x1440 Breakdown with small FM text: this reads all 21 titles and labels;
+        # -normalize or a hard threshold loses the labels on FM's highlighted rows.)
+        run("magick", "-limit", "thread", "1", image_path, "-alpha", "off", "-colorspace", "Gray",
+            "-resize", f"{up * 100:.4f}%", "-level", "10%,70%", "-negate", prep, check=True)
+        tsv = run("tesseract", prep, "stdout", "--psm", "3", "-l", "eng", "tsv", check=True, env=TESSERACT_ENV).stdout
+    groups, order = {}, []
+    for row in csv.DictReader(io.StringIO(tsv), delimiter="\t", quoting=csv.QUOTE_NONE):
+        text = (row.get("text") or "").strip()
+        if row.get("level") != "5" or not text or float(row.get("conf") or -1) < 0:
+            continue
+        key = (row["page_num"], row["block_num"], row["par_num"], row["line_num"])
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    # Split a line where two words are far apart. Tesseract sometimes joins a title or label with
+    # the gauge or bar at the other end of the panel (as a stray "I" or "3"); the app then looks for
+    # the gauge to the right of that, and finds nothing. Windows' OCR keeps them apart too.
+    pieces = []
+    for key in order:
+        words = sorted(groups[key], key=lambda w: int(w["left"]))
+        height = max(int(w["height"]) for w in words)
+        piece = [words[0]]
+        for w in words[1:]:
+            prev = piece[-1]
+            if int(w["left"]) - (int(prev["left"]) + int(prev["width"])) > 2.5 * height:
+                pieces.append(piece)
+                piece = []
+            piece.append(w)
+        pieces.append(piece)
+    lines = []
+    for words in pieces:
+        lines.append({
+            "text": " ".join(w["text"] for w in words),
+            "x0": min(int(w["left"]) for w in words) / up,
+            "y0": min(int(w["top"]) for w in words) / up,
+            "x1": max(int(w["left"]) + int(w["width"]) for w in words) / up,
+            "y1": max(int(w["top"]) + int(w["height"]) for w in words) / up,
+            "confidence": round(sum(float(w["conf"]) for w in words) / len(words) / 100.0, 3),
+        })
+    return lines
+
+
+# ------------------------------------------------------------------ serve
+
+def write_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f)
+    os.replace(tmp, path)
+
+
+def handle(bridge, req_name):
+    req_path = os.path.join(bridge, req_name)
+    try:
+        with open(req_path) as f:
+            req = json.load(f)
+    except (OSError, ValueError):
+        return
+    os.remove(req_path)
+    rid = str(req.get("id", ""))
+    if not re.fullmatch(r"[0-9A-Za-z-]{1,64}", rid):
+        return
+    try:
+        op = req.get("op")
+        if op == "capture":
+            name = f"cap-{rid}.png"
+            capture(os.path.join(bridge, name), auto=bool(req.get("auto")))
+            res = {"ok": True, "image": name}
+        elif op == "ocr":
+            name = os.path.basename(str(req.get("image", "")))
+            res = {"ok": True, "lines": ocr(os.path.join(bridge, name), req.get("upscale")), "lang": "eng (Tesseract)"}
+        else:
+            res = {"ok": False, "error": f"unknown op {op!r}"}
+    except Exception as e:  # report every failure to the app instead of leaving it waiting
+        res = {"ok": False, "error": str(e)}
+    log(f"{req.get('op')} {rid}: {'ok' if res['ok'] else res['error']}")
+    write_json(os.path.join(bridge, f"res-{rid}.json"), res)
+
+
+def fm_running():
+    for pid in os.listdir("/proc"):
+        if pid.isdigit():
+            try:
+                with open(f"/proc/{pid}/comm") as f:
+                    if f.read().strip().lower() == "fm.exe":
+                        return True
+            except OSError:
+                pass
+    return False
+
+
+def close_trainer():
+    """FM27 Trainer keeps FM's Proton session (and Steam's "running" state) alive: close it with FM."""
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                exe = f.read().split(b"\0")[0].decode(errors="replace")
+        except OSError:
+            continue
+        if exe.lower().endswith("fm27 trainer.exe") and ":\\" in exe:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+                log(f"closed FM27 Trainer (pid {pid})")
+            except OSError:
+                pass
+
+
+def serve():
+    # a background helper: the game and the app come first (children, i.e. magick and tesseract, inherit this)
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    cache = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")))
+    os.makedirs(cache, exist_ok=True)
+    lock = open(os.path.join(cache, "fm27-ocr-bridge.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        log("another fm27-ocr-bridge is already running")
+        return
+    bridge = bridge_dir()
+    os.makedirs(bridge, exist_ok=True)
+    for f in glob.glob(os.path.join(bridge, "*")):  # leftovers from an earlier session
+        os.remove(f)
+    alive = os.path.join(bridge, "host.alive")
+    log(f"bridge up: {bridge}")
+    start, last_beat, seen_fm = time.time(), 0.0, False
+    while True:
+        now = time.time()
+        if now - last_beat > 2:
+            with open(alive, "w") as f:
+                f.write(str(os.getpid()))
+            last_beat = now
+            running = fm_running()
+            seen_fm = seen_fm or running
+            # give FM two minutes to start; after that, stop once it is gone
+            if not running and (seen_fm or now - start > 120):
+                break
+        for name in sorted(os.listdir(bridge)):
+            if name.startswith("req-") and name.endswith(".json"):
+                handle(bridge, name)
+        time.sleep(0.15)
+    try:
+        os.remove(alive)
+    except OSError:
+        pass
+    if seen_fm:
+        close_trainer()
+    log("FM27 closed; bridge down")
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
+    if cmd == "serve":
+        serve()
+    elif cmd == "ocr" and len(sys.argv) in (3, 4):
+        for line in ocr(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None):
+            print(f"{line['confidence']:.2f}  ({line['x0']:.0f},{line['y0']:.0f})-({line['x1']:.0f},{line['y1']:.0f})  {line['text']}")
+    elif cmd == "capture" and len(sys.argv) in (3, 4):
+        capture(sys.argv[2], auto=sys.argv[3:] == ["--auto"])
+        print(sys.argv[2])
+    else:
+        print(__doc__)
+        sys.exit(2)

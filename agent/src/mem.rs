@@ -41,7 +41,28 @@ pub struct Region {
     pub private: bool,
 }
 
-pub use sys::{abi, images, pid, read_into, regions};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
+
+pub use sys::{abi, images, pid, regions};
+
+static READS: AtomicU64 = AtomicU64::new(0);
+static GAME_PLUGIN: Mutex<Option<(u32, Image)>> = Mutex::new(None);
+
+pub fn read_into(addr: u64, buf: &mut [u8]) -> bool {
+    READS.fetch_add(1, Ordering::Relaxed);
+    sys::read_into(addr, buf)
+}
+
+pub fn read_count() -> u64 {
+    READS.load(Ordering::Relaxed)
+}
+
+pub(crate) fn reset_game_plugin() {
+    *GAME_PLUGIN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
 #[cfg(any(windows, test))]
 pub use sys::{attach, find_fm};
 
@@ -118,10 +139,27 @@ pub fn c_string(addr: u64, max: usize) -> Option<String> {
 
 /// De native kern van FM27: game_plugin (macOS) of game_plugin.dll (Windows).
 pub fn game_plugin() -> Option<Image> {
-    images().into_iter().find(|i| {
+    let mut cache = GAME_PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
+    let pid = pid();
+    if let Some((cached_pid, img)) = cache.as_ref() {
+        if *cached_pid == pid && plugin_header_ok(img.start) {
+            return Some(img.clone());
+        }
+    }
+    *cache = None;
+    let img = images().into_iter().find(|i| {
         let file = i.path.rsplit(['/', '\\']).next().unwrap_or("");
         file.eq_ignore_ascii_case("game_plugin") || file.eq_ignore_ascii_case("game_plugin.dll")
-    })
+    })?;
+    *cache = Some((pid, img.clone()));
+    Some(img)
+}
+
+fn plugin_header_ok(start: u64) -> bool {
+    match abi() {
+        Abi::Msvc => u16_at(start) == Some(0x5A4D),
+        Abi::Itanium => u32_at(start) == Some(0xFEEDFACF),
+    }
 }
 
 /// Secties van een PE-image (Windows) en zijn build-id, gelezen uit de headers in het geheugen.

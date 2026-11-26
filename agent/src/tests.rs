@@ -477,6 +477,64 @@ fn windows_layout_end_to_end() {
 }
 
 #[test]
+fn humans_cache_reuses_valid_chains_and_rescans_after_break() {
+    let _g = reset(Abi::Msvc);
+    let base = 0x7FF6_0000_0000;
+    let staff_rva = 0x5705818;
+    with(|s| s.images.push(Image { path: "game_plugin.dll".into(), id: Some("PE-6AE565AF-1821C000".into()), start: base, end: base + 0x1821_C000, segments: Vec::new() }));
+    let w = build_world(&game::WIN, base, staff_rva, Some(0x56AF378), 0x28);
+    // Alleen de staflijst dient voor ontdekking in deze test.
+    with(|s| s.images[0].segments.clear());
+    let req = json!({"cmd": "select", "club": 992});
+    let initial = call(req.clone()).unwrap();
+    assert_eq!(initial["managers"][0]["club_uid"], 992);
+
+    let pair = base + staff_rva;
+    let staff = mem::read_bytes(pair, 16).unwrap();
+    mem::write_checked(pair, &staff, &[0; 16]).unwrap();
+    // Zonder de staflijst kan een nieuwe zoektocht de manager niet vinden.
+    assert_eq!(call(req.clone()).unwrap(), initial);
+
+    let addr = w.human + game::WIN.staff_contract + game::WIN.human_shift;
+    let contract = mem::read_bytes(addr, 8).unwrap();
+    mem::write_checked(addr, &contract, &[0; 8]).unwrap();
+    assert!(call(req.clone()).is_err());
+
+    mem::write_checked(addr, &[0; 8], &contract).unwrap();
+    assert!(call(req.clone()).is_err(), "de afgekeurde cache blijft leeg");
+    mem::write_checked(pair, &[0; 16], &staff).unwrap();
+    assert_eq!(call(req).unwrap(), initial);
+}
+
+#[test]
+fn plugin_cache_revalidates_and_resets() {
+    let _g = reset(Abi::Msvc);
+    let base = 0x7FF6_0000_0000;
+    let img = Image { path: "game_plugin.dll".into(), id: None, start: base, end: base + 0x1000, segments: Vec::new() };
+    assert!(mem::game_plugin().is_none());
+    with(|s| {
+        s.images.push(img.clone());
+        s.blocks.push(Block { start: base, data: fake_pe_header(base), private: false });
+    });
+    assert_eq!(mem::game_plugin().unwrap().start, base);
+    with(|s| s.images.clear());
+    let reads = mem::read_count();
+    assert_eq!(mem::game_plugin().unwrap().start, base);
+    assert_eq!(mem::read_count() - reads, 1);
+
+    with(|s| s.blocks.clear());
+    assert!(mem::game_plugin().is_none());
+    with(|s| {
+        s.images.push(img);
+        s.blocks.push(Block { start: base, data: fake_pe_header(base), private: false });
+    });
+    assert!(mem::game_plugin().is_some());
+    with(|s| s.images.clear());
+    game::reset();
+    assert!(mem::game_plugin().is_none());
+}
+
+#[test]
 fn mac_layout_end_to_end() {
     let _g = reset(Abi::Itanium);
     let base = 0x1_2000_0000u64;

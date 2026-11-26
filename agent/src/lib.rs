@@ -166,6 +166,7 @@ pub fn dispatch(req: &Value) -> Result<Value, String> {
                 "statics": game::statics_source(),
                 "platform": if mem::abi() == mem::Abi::Msvc { "windows" } else { "macos" },
                 "untested_writes": game::allow_untested(),
+                "reads": mem::read_count(),
             }))
         }
         "allow_untested" => {

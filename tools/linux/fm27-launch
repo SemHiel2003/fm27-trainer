@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Steam launch option for Football Manager 27 on Linux (see docs/LINUX.md):
+#   /path/to/tools/linux/fm27-launch %command%
+# Starts FM27 with its Proton launcher service on (so FM27 Trainer can run inside FM27's Proton
+# session), plus the screen-reading helper and FM27 Trainer alongside the game.
+# FM27_TRAINER=0 in front of it starts FM27 without the trainer.
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+export STEAM_COMPAT_LAUNCHER_SERVICE=proton
+
+if [ "${FM27_TRAINER:-1}" != 0 ]; then
+  log="${XDG_CACHE_HOME:-$HOME/.cache}"
+  mkdir -p "$log"
+  # Steam's overlay preload is meant for the game, not for these helpers
+  env -u LD_PRELOAD setsid -f "$here/fm27-ocr-bridge" serve >>"$log/fm27-ocr-bridge.log" 2>&1 </dev/null
+  env -u LD_PRELOAD setsid -f "$here/fm27-trainer" --wait >/dev/null 2>&1 </dev/null
+fi
+
+exec "$@"

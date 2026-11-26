@@ -48,7 +48,7 @@ pub fn module_ready() -> bool {
     }
     #[cfg(windows)]
     {
-        fm27_agent::fm_pid().is_some()
+        fm_running()
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -88,7 +88,17 @@ fn pgrep(name: &str) -> bool {
 pub fn fm_running() -> bool {
     #[cfg(windows)]
     {
-        fm27_agent::fm_pid().is_some()
+        use std::{sync::Mutex, time::{Duration, Instant}};
+        static RUNNING: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+        let mut cache = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, running)) = *cache {
+            if at.elapsed() < Duration::from_secs(2) {
+                return running;
+            }
+        }
+        let running = fm27_agent::fm_pid().is_some();
+        *cache = Some((Instant::now(), running));
+        running
     }
     #[cfg(not(windows))]
     {

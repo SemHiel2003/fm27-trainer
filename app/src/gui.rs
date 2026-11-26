@@ -124,7 +124,15 @@ enum PlanTab {
     Season,
 }
 
-type AnalysisResult = Result<(vision::Analysis, String), String>;
+type AnalysisResult = Result<Reading, String>;
+
+/// Uitkomst van een uitlezing.
+enum Reading {
+    Fresh(vision::Analysis, String),
+    /// automatisch uitlezen: FM zag er hetzelfde uit als de vorige keer, er is niets gelezen
+    /// (`true`: de vorige keer was een volledige Breakdown)
+    Unchanged(bool),
+}
 
 struct App {
     page: Page,
@@ -275,16 +283,25 @@ impl App {
 
     fn start_analysis(&mut self, ctx: &egui::Context, file: Option<PathBuf>) {
         let (tx, rx) = mpsc::channel();
-        let delay = self.settings.capture_delay && file.is_none() && !self.auto_pending;
+        let auto = self.auto_pending;
+        let delay = self.settings.capture_delay && file.is_none() && !auto;
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             if delay && cfg!(target_os = "macos") {
                 let _ = std::process::Command::new("open").args(["-b", "com.SportsInteractive.FootballManager27"]).status();
                 std::thread::sleep(std::time::Duration::from_millis(1500));
             }
+            let screen = || t!("FM27-scherm", "FM27 screen").to_string();
             let res: AnalysisResult = match file {
-                Some(p) => vision::analyze_file(&p).map(|(a, _)| (a, p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default())).map_err(|e| format!("{e:#}")),
-                None => vision::analyze_screen().map(|(a, _)| (a, t!("FM27-scherm", "FM27 screen").to_string())).map_err(|e| format!("{e:#}")),
+                Some(p) => vision::analyze_file(&p).map(|(a, _)| Reading::Fresh(a, p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default())).map_err(|e| format!("{e:#}")),
+                // automatisch: zonder focus te verplaatsen, en alleen lezen als het scherm veranderd is
+                None if auto => vision::analyze_screen_auto()
+                    .map(|r| match r {
+                        vision::AutoRead::Unchanged { complete } => Reading::Unchanged(complete),
+                        vision::AutoRead::Read(a) => Reading::Fresh(a, screen()),
+                    })
+                    .map_err(|e| format!("{e:#}")),
+                None => vision::analyze_screen().map(|(a, _)| Reading::Fresh(a, screen())).map_err(|e| format!("{e:#}")),
             };
             let _ = tx.send(res);
             ctx2.request_repaint();
@@ -303,16 +320,22 @@ impl App {
             let auto = std::mem::take(&mut self.auto_pending);
             match res {
                 // automatisch: alleen een volledige, zekere uitlezing telt, en alleen als er iets veranderd is
-                Ok((a, _)) if auto && (a.gauges.len() < 17 || a.components.len() < 4 || a.gauges.iter().any(|g| g.doubt)) => {
+                Ok(Reading::Unchanged(true)) => {
+                    self.auto_note = t!(format!("geen verandering ({})", chrono::Local::now().format("%H:%M:%S")), format!("no change ({})", chrono::Local::now().format("%H:%M:%S"))).to_string();
+                }
+                Ok(Reading::Unchanged(false)) => {
                     self.auto_note = t!("wacht op de Breakdown in FM", "waiting for the Breakdown in FM").to_string();
                 }
-                Ok((a, _)) if auto && same_values(&self.eff, &a.to_effectiveness("")) => {
+                Ok(Reading::Fresh(a, _)) if auto && (a.gauges.len() < 17 || a.components.len() < 4 || a.gauges.iter().any(|g| g.doubt)) => {
+                    self.auto_note = t!("wacht op de Breakdown in FM", "waiting for the Breakdown in FM").to_string();
+                }
+                Ok(Reading::Fresh(a, _)) if auto && same_values(&self.eff, &a.to_effectiveness("")) => {
                     self.auto_note = t!(format!("geen verandering ({})", chrono::Local::now().format("%H:%M:%S")), format!("no change ({})", chrono::Local::now().format("%H:%M:%S"))).to_string();
                 }
                 Err(_) if auto => {
                     self.auto_note = t!("wacht op de Breakdown in FM", "waiting for the Breakdown in FM").to_string();
                 }
-                Ok((a, src)) => {
+                Ok(Reading::Fresh(a, src)) => {
                     if auto {
                         self.auto_note = t!(format!("bijgewerkt ({})", chrono::Local::now().format("%H:%M:%S")), format!("updated ({})", chrono::Local::now().format("%H:%M:%S"))).to_string();
                     }

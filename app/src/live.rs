@@ -109,7 +109,10 @@ pub struct LiveState {
     aux_rx: Option<mpsc::Receiver<(Aux, Result<Value, String>)>>,
     rx: Option<mpsc::Receiver<Snapshot>>,
     train_rx: Option<mpsc::Receiver<(bool, bool, Result<Outcome, String>)>>,
-    last_auto: Option<Instant>,
+    auto_probe_rx: Option<mpsc::Receiver<Option<NaiveDate>>>,
+    last_auto_probe: Option<Instant>,
+    last_auto_run: Option<(Instant, NaiveDate)>,
+    auto_in_flight: Option<NaiveDate>,
     last_poll: Option<Instant>,
 }
 
@@ -144,7 +147,10 @@ impl Default for LiveState {
             aux_rx: None,
             rx: None,
             train_rx: None,
-            last_auto: None,
+            auto_probe_rx: None,
+            last_auto_probe: None,
+            last_auto_run: None,
+            auto_in_flight: None,
             last_poll: None,
         }
     }
@@ -179,7 +185,7 @@ fn short_result(v: &Value) -> String {
 
 impl LiveState {
     pub fn busy(&self) -> bool {
-        self.rx.is_some() || self.train_rx.is_some()
+        self.rx.is_some() || self.train_rx.is_some() || self.auto_probe_rx.is_some()
     }
 
     /// Loopt er een zoek-, controle- of verkoopopdracht?
@@ -267,7 +273,10 @@ impl LiveState {
         self.training = None;
         self.fm_had.clear();
         self.tactics = None;
-        self.last_auto = Some(Instant::now());
+        self.last_auto_probe = Some(Instant::now());
+        self.last_auto_run = None;
+        self.auto_in_flight = None;
+        self.auto_probe_rx = None;
         self.last_poll = None;
         // loopt er nog een opdracht voor het vorige team, dan volgt de verversing daarna vanzelf
         if !self.busy() {
@@ -408,6 +417,11 @@ impl LiveState {
                 self.rx = None;
                 let was = self.connected;
                 self.connected = s.club.is_some();
+                if !self.connected {
+                    self.last_auto_run = None;
+                    self.auto_in_flight = None;
+                    self.auto_probe_rx = None;
+                }
                 if s.club.is_some() {
                     self.club = s.club;
                 }
@@ -504,6 +518,14 @@ impl LiveState {
         if let Some(rx) = &self.train_rx {
             if let Ok((wrote, auto, r)) = rx.try_recv() {
                 self.train_rx = None;
+                if auto {
+                    let now = Instant::now();
+                    self.last_auto_probe = Some(now);
+                    if let Some(probed) = self.auto_in_flight.take() {
+                        let date = r.as_ref().ok().and_then(|o| o.today).unwrap_or(probed);
+                        self.last_auto_run = Some((now, date));
+                    }
+                }
                 self.last_check = Some(chrono::Local::now());
                 match r {
                     Ok(o) => {
@@ -557,15 +579,45 @@ impl LiveState {
             self.last_poll = Some(Instant::now());
             self.refresh(ctx, "", None);
         }
-        // nieuwe effectiveness → komende weken opnieuw plannen
-        // automatische modus: alle komende weken volgens plan houden. FM bouwt een week opnieuw op als
-        // de wedstrijden erin veranderen (loting, verplaatsing); dat zetten we hier weer recht.
+        // automatische modus: controleer de datum vóór het plannen, en controleer af en toe
+        // ook op een ongewijzigde datum (FM kan de week opnieuw opbouwen).
         let read_only = self.untested_build && !self.allow_untested;
         // een testopname (FM27_SNAPSHOT) mag nooit iets in FM veranderen
         let snapshot = std::env::var_os("FM27_SNAPSHOT").is_some();
-        if auto && !snapshot && self.connected && !read_only && !self.busy() && self.last_auto.is_none_or(|t| t.elapsed().as_secs() >= 8) {
-            self.last_auto = Some(Instant::now());
-            self.training_job(ctx, eff, settings, true, false, true);
+        let auto_allowed = auto && !snapshot && self.connected && !read_only;
+        if let Some(rx) = &self.auto_probe_rx {
+            match rx.try_recv() {
+                Ok(date) => {
+                    self.auto_probe_rx = None;
+                    let run_date = match self.last_auto_run {
+                        Some((at, last_date)) if at.elapsed().as_secs() >= 120 => date.or(Some(last_date)),
+                        Some((_, last_date)) => date.filter(|d| *d != last_date),
+                        None => date,
+                    };
+                    if auto_allowed && !self.busy() {
+                        if let Some(date) = run_date {
+                            // Bij een mislukte opdracht telt de gemeten datum om herhaling te beperken.
+                            self.auto_in_flight = Some(date);
+                            self.training_job(ctx, eff, settings, true, false, true);
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.auto_probe_rx = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if auto_allowed && !self.busy() && self.last_auto_probe.is_none_or(|t| t.elapsed().as_secs() >= 8) {
+            self.last_auto_probe = Some(Instant::now());
+            let (tx, rx) = mpsc::channel();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let date = agent::request(json!({"cmd": "game_date"})).ok().and_then(|v| {
+                    NaiveDate::from_yo_opt(v.get("year")?.as_i64()? as i32, v.get("doy")?.as_u64()? as u32)
+                });
+                let _ = tx.send(date);
+                ctx.request_repaint();
+            });
+            self.auto_probe_rx = Some(rx);
         }
     }
 }

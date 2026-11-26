@@ -55,6 +55,9 @@ pub struct Analysis {
     pub ocr: String,
     /// hoogte van de labels (mediaan), voor de tweede meting op de referentiegrootte
     pub text_height: Option<f32>,
+    /// titels, labels en koppen ("Key Factors") die de OCR in de beste taal zag: 0 = niets dat op
+    /// de Breakdown lijkt
+    pub signs: usize,
 }
 
 impl Analysis {
@@ -74,10 +77,126 @@ impl Analysis {
 
 /// Legt het FM27-venster vast (vereist "Schermopname"-toestemming in Systeeminstellingen).
 pub fn capture_fm_window() -> Result<RgbaImage> {
+    capture_fm_window_as(false)
+}
+
+/// Als `capture_fm_window`, voor het automatisch uitlezen: haalt FM nooit naar voren (het Linux-hulpje
+/// geeft dan een fout als FM niet in beeld is) en laat de focus waar hij is.
+pub fn capture_fm_window_auto() -> Result<RgbaImage> {
+    capture_fm_window_as(true)
+}
+
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn capture_fm_window_as(auto: bool) -> Result<RgbaImage> {
     #[cfg(target_os = "macos")]
     return mac_capture::capture();
+    #[cfg(windows)]
+    if wine_bridge::active() {
+        return wine_bridge::capture(auto);
+    }
     #[cfg(not(target_os = "macos"))]
     capture_fm_window_xcap()
+}
+
+/// Linux (Steam Proton): de Windows-app draait dan in de Wine-prefix van FM27. Daar geeft het
+/// vastleggen van het venster een zwart beeld (FM tekent via Vulkan) en bestaat Windows.Media.Ocr
+/// niet. Een hulpje op de Linux-kant (`tools/linux/fm27-ocr-bridge`) doet dan de opname (grim) en
+/// de OCR (Tesseract); de app en het hulpje praten via bestanden in `<app-map>\linux-bridge`. Alleen
+/// in gebruik zolang het hulpje daar elke 2 s `host.alive` bijwerkt: op Windows verandert niets.
+#[cfg(windows)]
+pub mod wine_bridge {
+    use super::OcrLine;
+    use anyhow::{Context, Result, anyhow, bail};
+    use image::RgbaImage;
+    use serde_json::{Value, json};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant, SystemTime};
+
+    pub fn dir() -> PathBuf {
+        crate::data_dir().join("linux-bridge")
+    }
+
+    /// Of het hulpje draait: `host.alive` is minder dan 15 s oud.
+    pub fn active() -> bool {
+        let Ok(t) = std::fs::metadata(dir().join("host.alive")).and_then(|m| m.modified()) else { return false };
+        SystemTime::now().duration_since(t).map(|d| d.as_secs() < 15).unwrap_or(true)
+    }
+
+    fn new_id() -> String {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        format!("{}-{}-{}", std::process::id(), nanos % 1_000_000_000, N.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Schrijft `req-<id>.json` (via een tijdelijk bestand, zodat het hulpje nooit een half
+    /// verzoek leest) en wacht op `res-<id>.json`.
+    fn request(id: &str, mut req: Value, timeout: Duration) -> Result<Value> {
+        let d = dir();
+        req["id"] = json!(id);
+        let tmp = d.join(format!("req-{id}.tmp"));
+        let path = d.join(format!("req-{id}.json"));
+        std::fs::write(&tmp, serde_json::to_vec(&req)?).context("linux-bridge")?;
+        std::fs::rename(&tmp, &path).context("linux-bridge")?;
+        let res = d.join(format!("res-{id}.json"));
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(bytes) = std::fs::read(&res) {
+                let _ = std::fs::remove_file(&res);
+                let v: Value = serde_json::from_slice(&bytes).context("linux-bridge")?;
+                if v["ok"].as_bool() == Some(true) {
+                    return Ok(v);
+                }
+                bail!("fm27-ocr-bridge: {}", v["error"].as_str().unwrap_or("?"));
+            }
+            if Instant::now() > deadline {
+                let _ = std::fs::remove_file(&path);
+                bail!("{}", crate::t!("Het Linux-hulpje (fm27-ocr-bridge) antwoordt niet.", "The Linux helper (fm27-ocr-bridge) does not answer."));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// `auto`: het automatisch uitlezen; het hulpje verandert dan de focus niet en meldt het als FM
+    /// niet in beeld is, in plaats van FM naar voren te halen.
+    pub fn capture(auto: bool) -> Result<RgbaImage> {
+        let v = request(&new_id(), json!({ "op": "capture", "auto": auto }), Duration::from_secs(15))?;
+        let name = v["image"].as_str().ok_or_else(|| anyhow!("fm27-ocr-bridge: geen beeld"))?;
+        let path = dir().join(Path::new(name).file_name().unwrap_or_default());
+        let img = image::open(&path).with_context(|| path.display().to_string())?.to_rgba8();
+        let _ = std::fs::remove_file(&path);
+        if img.width() < 200 {
+            bail!("{}", crate::t!("Vastgelegd beeld is leeg.", "Captured image is empty."));
+        }
+        Ok(img)
+    }
+
+    pub fn ocr(img: &RgbaImage) -> Result<(Vec<OcrLine>, String)> {
+        let id = new_id();
+        let name = format!("ocr-{id}.png");
+        let path = dir().join(&name);
+        img.save(&path).context("linux-bridge")?;
+        let res = request(&id, json!({ "op": "ocr", "image": name }), Duration::from_secs(60));
+        let _ = std::fs::remove_file(&path);
+        let v = res?;
+        let f = |l: &Value, k: &str| l[k].as_f64().unwrap_or(0.0) as f32;
+        let lines = v["lines"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|l| OcrLine {
+                        text: l["text"].as_str().unwrap_or_default().to_string(),
+                        x0: f(l, "x0"),
+                        y0: f(l, "y0"),
+                        x1: f(l, "x1"),
+                        y1: f(l, "y1"),
+                        confidence: f(l, "confidence"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok((lines, v["lang"].as_str().unwrap_or("Tesseract").to_string()))
+    }
 }
 
 /// De vensters die de Mac-opname ziet (diagnose: `fm27-trainer windows`).
@@ -349,6 +468,9 @@ mod platform {
     }
 
     pub fn languages() -> Vec<String> {
+        if super::wine_bridge::active() {
+            return vec!["eng (Tesseract)".into()];
+        }
         init();
         let Ok(list) = OcrEngine::AvailableRecognizerLanguages() else { return Vec::new() };
         list.into_iter().filter_map(|l| l.LanguageTag().ok()).map(|t| t.to_string()).collect()
@@ -380,6 +502,9 @@ mod platform {
     }
 
     pub fn ocr(img: &RgbaImage, lang: Option<&str>) -> Result<(Vec<OcrLine>, String)> {
+        if super::wine_bridge::active() {
+            return super::wine_bridge::ocr(img);
+        }
         init();
         let engine = engine(lang)?;
         let tag = engine.RecognizerLanguage().and_then(|l| l.LanguageTag()).map(|t| t.to_string()).unwrap_or_default();
@@ -1056,9 +1181,13 @@ fn measure_pie(img: &RgbaImage, xa: u32, xb: u32, y0: u32, y1: u32, yc: f32, col
 /// Welk deel van een taart (0–1) bij de kleur van de vulling past. FM kleurt een meter naar zijn
 /// niveau (gemeten op 2560×1440, Ajax- en Sunderland-save): 20–40 % oranje (tint ~43°), 50–70 %
 /// geel (~60°), 90 % groen (~120°); 40 % kan ook geel zijn. De grenzen hier zijn ruim genomen.
+///
+/// Op Steam 26620374 (17 nov 2026) volgt de kleur het niveau minder strak: in één save was een
+/// meter op 70 % oranje (tint ~32°), stonden meters op 40 % rood-oranje (~17°) en liepen meters op
+/// 50 % van oranje (~32°) tot geel (~64°). Oranje en rood mogen daarom tot 80 %.
 fn color_band(hue: f32) -> (f32, f32) {
     if hue < 50.0 {
-        (0.0, 0.5)
+        (0.0, 0.8)
     } else if hue < 90.0 {
         (0.3, 0.9)
     } else {
@@ -1232,13 +1361,20 @@ const REF_TEXT: f32 = 20.0;
 /// Leest de OCR in de taal van het profiel bijna niets van de Breakdown (FM in het Japans terwijl
 /// Windows Engels leest, of andersom), dan nog eens in elke andere geïnstalleerde OCR-taal.
 pub fn analyze_image(img: &RgbaImage) -> Result<(Analysis, Vec<OcrLine>)> {
-    let mut best = analyze_in(img, None)?;
+    analyze_image_with(img, true)
+}
+
+/// `thorough`: bij een opname zonder enig teken van de Breakdown toch de vergrotingen proberen. Het
+/// automatisch uitlezen doet dat niet: FM staat meestal op een ander scherm, en elke vergroting is
+/// een volledige OCR-ronde (op Linux vele CPU-seconden).
+pub fn analyze_image_with(img: &RgbaImage, thorough: bool) -> Result<(Analysis, Vec<OcrLine>)> {
+    let mut best = analyze_in(img, None, thorough)?;
     if best.0.labels < 6 {
         for tag in ocr_languages() {
             if tag.eq_ignore_ascii_case(&best.0.ocr) {
                 continue;
             }
-            let Ok(other) = analyze_in(img, Some(&tag)) else { continue };
+            let Ok(other) = analyze_in(img, Some(&tag), thorough) else { continue };
             if (other.0.gauges.len(), other.0.labels) > (best.0.gauges.len(), best.0.labels) {
                 best = other;
             }
@@ -1247,7 +1383,26 @@ pub fn analyze_image(img: &RgbaImage) -> Result<(Analysis, Vec<OcrLine>)> {
     Ok(best)
 }
 
-fn analyze_in(img: &RgbaImage, lang: Option<&str>) -> Result<(Analysis, Vec<OcrLine>)> {
+/// Vult `a` aan uit `other` (een andere meting van dezelfde opname): een meter die in `a` ontbreekt
+/// of twijfel heeft, komt uit `other` als die hem zonder twijfel las, en een ontbrekende balk ook.
+fn merge_readings(a: &mut Analysis, other: &Analysis) {
+    for g in &other.gauges {
+        match a.gauges.iter_mut().find(|x| x.factor == g.factor) {
+            Some(x) if x.doubt && !g.doubt => *x = g.clone(),
+            Some(_) => {}
+            None => a.gauges.push(g.clone()),
+        }
+    }
+    a.missing.retain(|f| !a.gauges.iter().any(|g| g.factor == *f));
+    for (c, v) in &other.components {
+        if !a.components.iter().any(|(x, _)| x == c) {
+            a.components.push((*c, *v));
+        }
+    }
+    a.labels = a.labels.max(other.labels);
+}
+
+fn analyze_in(img: &RgbaImage, lang: Option<&str>, thorough: bool) -> Result<(Analysis, Vec<OcrLine>)> {
     let (lines, tag) = ocr(img, lang)?;
     let mut first = analyze_with_lines(img, &lines);
     first.ocr = tag.clone();
@@ -1255,7 +1410,11 @@ fn analyze_in(img: &RgbaImage, lang: Option<&str>) -> Result<(Analysis, Vec<OcrL
     let scales: Vec<f32> = match best.0.text_height {
         Some(th) if (th - REF_TEXT).abs() / REF_TEXT > 0.12 => vec![REF_TEXT / th],
         Some(_) => Vec::new(),
-        None => vec![1.5, 2.0],
+        // zonder één herkend label: de kleine tekst vraagt om een vergroting. Zag de eerste ronde
+        // niets van de Breakdown (geen titel, label of kop), dan is het (bij het automatisch
+        // uitlezen) een ander FM-scherm: dat kost geen twee extra OCR-rondes
+        None if thorough || best.0.signs > 0 => vec![1.5, 2.0],
+        None => Vec::new(),
     };
     for k in scales {
         let (w, h) = ((img.width() as f32 * k).round() as u32, (img.height() as f32 * k).round() as u32);
@@ -1277,9 +1436,12 @@ fn analyze_in(img: &RgbaImage, lang: Option<&str>) -> Result<(Analysis, Vec<OcrL
         // meting die nagekeken moet worden (kleur past niet, of 0) telt niet als gelezen
         let score = |a: &Analysis| (a.gauges.iter().filter(|g| !g.doubt).count() + a.components.len(), a.gauges.len());
         let better = score(&a2) >= score(&best.0);
-        if better {
-            best = (a2, lines2);
-        }
+        // Per waarde, niet per meting: met kleine tekst in FM worden de balken vaak alleen op de
+        // referentiegrootte gevonden, terwijl een meter op ware grootte goed en na het schalen fout
+        // kan uitkomen (of andersom). De winnende meting blijft, aangevuld uit de andere.
+        let (mut win, other) = if better { ((a2, lines2), best.0) } else { (best, a2) };
+        merge_readings(&mut win.0, &other);
+        best = win;
     }
     Ok(best)
 }
@@ -1314,7 +1476,15 @@ pub fn analyze_with_lines(img: &RgbaImage, lines: &[OcrLine]) -> Analysis {
         if std::env::var_os("FM27_VISION_DEBUG").is_some() {
             eprintln!("label {:<34} regel {:?} eind {label_end:.0} zoek {:.0}..{limit:.0} y {:.0} th {th:.0}", f.label(), line.text, label_end + th * 0.4, line.yc());
         }
-        match find_pie(img, label_end + th * 0.4, limit, line.yc(), th) {
+        let mut found = find_pie(img, label_end + th * 0.4, limit, line.yc(), th);
+        // Een meter die tot aan het eind van het zoekgebied loopt, is afgesneden (een kort label in
+        // een breed paneel, kleine tekst in FM): dan iets verder zoeken. Afgesneden las hij te laag
+        // (Line of Engagement 30 of 0 in plaats van 40).
+        if found.as_ref().is_some_and(|g| g.bbox[2] as f32 >= limit - 1.0) && limit < next_label_x {
+            let wider = (limit + th * 3.0).min(next_label_x);
+            found = find_pie(img, label_end + th * 0.4, wider, line.yc(), th).or(found);
+        }
+        match found {
             Some(g) => {
                 let (score, doubt) = gauge_score(g.fill, g.hue, g.fill > 0.0);
                 gauges.push(GaugeReading { factor: f, score, fill: g.fill, hue: g.hue, bbox: g.bbox, doubt });
@@ -1457,6 +1627,7 @@ pub fn analyze_with_lines(img: &RgbaImage, lines: &[OcrLine]) -> Analysis {
         labels: m.count(),
         ocr: String::new(),
         text_height,
+        signs: m.count() + m.heads.len(),
     }
 }
 
@@ -1480,19 +1651,106 @@ pub fn report(a: &Analysis, lines: &[OcrLine]) -> String {
     s
 }
 
+// ---------------------------------------------------------------- vingerafdruk
+
+/// Grof beeld van een opname om te zien of FM sinds de vorige uitlezing veranderd is: het gemiddelde
+/// van elk blokje (4 × 4 px bij 2560 breed) per kleurkanaal, zonder de bovenste balk met de klok en
+/// de FPS-teller. Fijn genoeg om één gewijzigd taartpunt van een meter (±16 px) te zien.
+#[derive(Clone)]
+pub struct Fingerprint {
+    size: (u32, u32),
+    cells: Vec<[u8; 3]>,
+}
+
+const FP_COLS: u32 = 640;
+const FP_ROWS: u32 = 360;
+/// de bovenste 7 % (menu, klok, FPS-teller) doet niet mee
+const FP_SKIP_ROWS: u32 = FP_ROWS * 7 / 100;
+/// een blokje is veranderd als een kanaal meer dan dit verschilt (van 255)
+const FP_CELL_DIFF: i32 = 6;
+/// zoveel blokjes mogen verschillen (ruis) zonder dat het scherm als veranderd telt
+const FP_NOISE_CELLS: usize = 1;
+
+static LAST_READ: std::sync::Mutex<Option<(Fingerprint, bool)>> = std::sync::Mutex::new(None);
+
+pub fn fingerprint(img: &RgbaImage) -> Fingerprint {
+    let (w, h) = (img.width(), img.height());
+    let raw = img.as_raw();
+    let mut cells = Vec::with_capacity(((FP_ROWS - FP_SKIP_ROWS) * FP_COLS) as usize);
+    for cy in FP_SKIP_ROWS..FP_ROWS {
+        let (y0, y1) = (cy * h / FP_ROWS, ((cy + 1) * h / FP_ROWS).max(cy * h / FP_ROWS + 1).min(h));
+        for cx in 0..FP_COLS {
+            let (x0, x1) = (cx * w / FP_COLS, ((cx + 1) * w / FP_COLS).max(cx * w / FP_COLS + 1).min(w));
+            let mut sum = [0u32; 3];
+            for y in y0..y1 {
+                let row = (y * w) as usize * 4;
+                for px in raw[row + x0 as usize * 4..row + x1 as usize * 4].chunks_exact(4) {
+                    sum[0] += px[0] as u32;
+                    sum[1] += px[1] as u32;
+                    sum[2] += px[2] as u32;
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)).max(1);
+            cells.push([(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8]);
+        }
+    }
+    Fingerprint { size: (w, h), cells }
+}
+
+/// Zelfde scherm: even groot, en op hooguit `FP_NOISE_CELLS` blokjes na hetzelfde.
+pub fn same_screen(a: &Fingerprint, b: &Fingerprint) -> bool {
+    a.size == b.size
+        && a.cells.len() == b.cells.len()
+        && a.cells.iter().zip(&b.cells).filter(|(p, q)| (0..3).any(|c| (p[c] as i32 - q[c] as i32).abs() > FP_CELL_DIFF)).count() <= FP_NOISE_CELLS
+}
+
 pub fn analyze_file(path: &std::path::Path) -> Result<(Analysis, Vec<OcrLine>)> {
     let img = image::open(path).with_context(|| path.display().to_string())?.to_rgba8();
     analyze_image(&img)
 }
 
 pub fn analyze_screen() -> Result<(Analysis, RgbaImage)> {
-    let img = capture_fm_window()?;
+    read_screen(capture_fm_window()?, true)
+}
+
+/// Wat het automatisch uitlezen ziet.
+pub enum AutoRead {
+    /// het FM-scherm is (vrijwel) hetzelfde als bij de vorige uitlezing: er is niets uitgelezen;
+    /// `complete` zegt of die vorige uitlezing een volledige Breakdown was
+    Unchanged { complete: bool },
+    Read(Analysis),
+}
+
+/// Automatisch uitlezen: legt FM vast zonder de focus te verplaatsen en leest alleen als het scherm
+/// sinds de vorige uitlezing veranderd is. Een ongewijzigd scherm kost zo alleen de opname, geen
+/// OCR; en zonder teken van de Breakdown blijft het bij één OCR-ronde.
+pub fn analyze_screen_auto() -> Result<AutoRead> {
+    let img = capture_fm_window_auto()?;
+    if let Some((prev, complete)) = LAST_READ.lock().ok().and_then(|g| g.clone())
+        && same_screen(&prev, &fingerprint(&img))
+    {
+        return Ok(AutoRead::Unchanged { complete });
+    }
+    read_screen(img, false).map(|(a, _)| AutoRead::Read(a))
+}
+
+/// Een volledige, zekere uitlezing van de Breakdown (zoals de app die als bijgewerkt neemt).
+fn is_complete(a: &Analysis) -> bool {
+    a.gauges.len() >= 17 && a.components.len() >= 4 && !a.gauges.iter().any(|g| g.doubt)
+}
+
+fn read_screen(img: RgbaImage, thorough: bool) -> Result<(Analysis, RgbaImage)> {
     // de opname bewaren, zodat een verkeerde uitlezing achteraf na te spelen is:
     // `fm27-trainer analyze "<map>\last-capture.png" --ocr`
     let dir = crate::data_dir();
     let _ = std::fs::create_dir_all(&dir);
     let _ = img.save(dir.join("last-capture.png"));
-    let (a, lines) = analyze_image(&img)?;
+    let fp = fingerprint(&img);
+    let (a, lines) = analyze_image_with(&img, thorough)?;
+    // onthouden voor het automatisch uitlezen, ook als dit geen Breakdown bleek te zijn
+    if let Ok(mut last) = LAST_READ.lock() {
+        *last = Some((fp, is_complete(&a)));
+    }
     // wat de uitlezing zag, om mee te sturen bij een melding
     let _ = std::fs::write(dir.join("last-analysis.txt"), report(&a, &lines));
     if a.gauges.len() >= 4 {
@@ -1663,6 +1921,77 @@ mod tests {
         assert!(wrong.is_empty(), "verkeerd gelezen:\n{}", wrong.join("\n"));
     }
 
+    /// Opname van de Steam-build van 17 nov 2026 (26620374), 2560×1440 met kleine tekst in FM
+    /// (labels ~14 px): het paneel Tactical Understanding, met de OCR-regels zoals Tesseract ze
+    /// las. Line of Engagement is een kort label in een breed paneel: het zoekgebied (22 × de
+    /// teksthoogte) hield midden in de meter op, waardoor hij 30 of 0 las. Tactical Complexity staat
+    /// op 70 % en is oranje (tint ~32°): dat werd als twijfel naar 50 gezet.
+    #[test]
+    fn small_text_steam_26620374() {
+        let img = image::load_from_memory(include_bytes!("../testdata/breakdown_tu_steam26620374.png")).unwrap().to_rgba8();
+        let js: serde_json::Value = serde_json::from_slice(include_bytes!("../testdata/breakdown_tu_steam26620374.json")).unwrap();
+        let f = |l: &serde_json::Value, k: &str| l[k].as_f64().unwrap() as f32;
+        let lines: Vec<OcrLine> = js
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| OcrLine { text: l["text"].as_str().unwrap().into(), x0: f(l, "x0"), y0: f(l, "y0"), x1: f(l, "x1"), y1: f(l, "y1"), confidence: 1.0 })
+            .collect();
+        let a = analyze_with_lines(&img, &lines);
+        let want = [
+            (Factor::InPossessionShape, 50),
+            (Factor::PassingStyle, 50),
+            (Factor::BuildUp, 40),
+            (Factor::ChanceCreation, 50),
+            (Factor::OutOfPossessionShape, 40),
+            (Factor::LineOfEngagement, 40),
+            (Factor::PressingIntensity, 40),
+            (Factor::PressingTrap, 50),
+            (Factor::PlayerTacticalAbility, 50),
+            (Factor::TacticalComplexity, 70),
+        ];
+        let mut wrong = Vec::new();
+        for (factor, score) in want {
+            match a.gauges.iter().find(|g| g.factor == factor) {
+                // de meter heel: zo breed als hoog (afgesneden las hij soms toevallig goed)
+                Some(g) if g.score.round() as u32 == score && !g.doubt && (g.bbox[2] - g.bbox[0]) * 10 >= (g.bbox[3] - g.bbox[1]) * 9 => {}
+                got => wrong.push(format!("{factor:?}: verwacht {score}, gelezen {:?}", got.map(|g| (g.score, g.doubt, g.bbox)))),
+            }
+        }
+        assert!(wrong.is_empty(), "verkeerd gelezen:\n{}", wrong.join("\n"));
+    }
+
+    /// Twee metingen van dezelfde opname (eigen grootte en referentiegrootte) worden per waarde
+    /// samengevoegd: een meter met twijfel of een ontbrekende meter of balk komt uit de andere.
+    #[test]
+    fn readings_are_merged_per_value() {
+        let g = |factor, score: f32, doubt| GaugeReading { factor, score, fill: score / 100.0, hue: 40.0, bbox: [0; 4], doubt };
+        let analysis = |gauges: Vec<GaugeReading>, components: Vec<(Component, f32)>| Analysis {
+            gauges,
+            components,
+            missing: Vec::new(),
+            image_size: (100, 100),
+            lang: "english",
+            labels: 21,
+            ocr: String::new(),
+            text_height: Some(20.0),
+            signs: 21,
+        };
+        let mut a = analysis(vec![g(Factor::BuildUp, 40.0, false), g(Factor::LineOfEngagement, 0.0, true)], vec![(Component::PlayerAbility, 30.0)]);
+        a.missing.push(Factor::PressingTrap);
+        let other = analysis(
+            vec![g(Factor::BuildUp, 50.0, false), g(Factor::LineOfEngagement, 40.0, false), g(Factor::PressingTrap, 50.0, false)],
+            vec![(Component::PlayerAbility, 70.0), (Component::TacticalUnderstanding, 30.0)],
+        );
+        merge_readings(&mut a, &other);
+        let score = |f| a.gauges.iter().find(|g| g.factor == f).map(|g| (g.score, g.doubt));
+        assert_eq!(score(Factor::BuildUp), Some((40.0, false)), "een goede meting blijft staan");
+        assert_eq!(score(Factor::LineOfEngagement), Some((40.0, false)), "twijfel wordt vervangen");
+        assert_eq!(score(Factor::PressingTrap), Some((50.0, false)), "ontbrekend wordt aangevuld");
+        assert!(a.missing.is_empty());
+        assert_eq!(a.components, vec![(Component::PlayerAbility, 30.0), (Component::TacticalUnderstanding, 30.0)]);
+    }
+
     /// Grotere tekst in FM (of een kleinere rijafstand): de zoekband rond een label reikt dan tot in
     /// de meters van de rij erboven en eronder. Elke meter moet zijn eigen waarde houden.
     #[test]
@@ -1695,10 +2024,46 @@ mod tests {
 "));
     }
 
+    /// Het automatisch uitlezen slaat de OCR over als FM er hetzelfde uitziet: ruis en de bovenste
+    /// balk (klok, FPS-teller) tellen niet, één gewijzigd taartpunt van een meter wel.
+    #[test]
+    fn fingerprint_sees_a_gauge_change_but_not_noise() {
+        let mut base = RgbaImage::from_pixel(2560, 1440, Rgba([40, 30, 32, 255]));
+        for y in 340..360 {
+            for x in 495..515 {
+                base.put_pixel(x, y, Rgba([218, 206, 208, 255]));
+            }
+        }
+        let fp = fingerprint(&base);
+        assert!(same_screen(&fp, &fingerprint(&base)));
+        let mut noisy = base.clone();
+        for (i, p) in noisy.pixels_mut().enumerate() {
+            p[0] = p[0].saturating_add((i % 5) as u8);
+        }
+        assert!(same_screen(&fp, &fingerprint(&noisy)), "ruis");
+        let mut top = base.clone();
+        for y in 10..40 {
+            for x in 2270..2300 {
+                top.put_pixel(x, y, Rgba([255, 255, 255, 255]));
+            }
+        }
+        assert!(same_screen(&fp, &fingerprint(&top)), "bovenste balk");
+        let mut wedge = base.clone();
+        for y in 346..350 {
+            for x in 503..507 {
+                wedge.put_pixel(x, y, Rgba([200, 220, 40, 255]));
+            }
+        }
+        assert!(!same_screen(&fp, &fingerprint(&wedge)), "één taartpunt");
+        assert!(!same_screen(&fp, &fingerprint(&RgbaImage::from_pixel(1920, 1080, Rgba([40, 30, 32, 255])))), "andere grootte");
+    }
+
     #[test]
     fn colour_disagrees_with_fill() {
-        // een oranje meter (laag) die als 70 % gemeten wordt: naar de rand van oranje, en nakijken
-        assert_eq!(gauge_score(0.7, 43.0, true), (50.0, true));
+        // een oranje meter die als 90 % gemeten wordt: naar de rand van oranje, en nakijken
+        assert_eq!(gauge_score(0.9, 43.0, true), (80.0, true));
+        // Steam 26620374: Tactical Complexity op 70 % is oranje (tint ~32°)
+        assert_eq!(gauge_score(0.7, 32.0, true), (70.0, false));
         assert_eq!(gauge_score(0.4, 43.0, true), (40.0, false));
         assert_eq!(gauge_score(0.4, 59.0, true), (40.0, false), "40 % kan geel zijn (Ajax-save)");
         assert_eq!(gauge_score(0.9, 120.0, true), (90.0, false));
