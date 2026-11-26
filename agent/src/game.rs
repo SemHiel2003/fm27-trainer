@@ -191,6 +191,23 @@ pub const BUILDS: &[Build] = &[
     // trainingsdag elk met undo en exact terug; verkopen en tactisch begrip als droge controle.
     // Windows en de Intel-helft van deze update: geen profiel, die zoekt de app zelf op (alleen lezen).
     Build { id: "869F5F90-FD89-3606-8AE4-2B4A7F02F324", label: "Steam 26620374 macOS arm64", writes_tested: true, current_date: 0x5781DC8, staff: 0x57A3010, clubs: 0x57A3180 },
+    // Windows-helft van dezelfde update, uit FMLibreEditor steam-26620374.toml en gamepass-0.9.2524.0.toml
+    // (17 nov 2026). De datum staat hier 0x55020 vóór de staflijst (eerder 0x564A0): 0x1480 verder dan
+    // `discover_date` zoekt, dus zonder profiel viel de app terug op de teamdatum (rond de laatste
+    // wedstrijd) en plande hij vanaf de verkeerde week.
+    // Steam Windows live getest onder Proton (22 nov 2026, Lyn-save, mei 2031): datum gelijk aan FM, kalender gelijk
+    // aan FM's scherm, `set_week` + undo. FM's kalenderscherm toont een geschreven dag pas na de volgende "Continue"
+    // (het scherm houdt een eigen kopie bij); de training zelf komt uit dit weekrecord. FM zet bij een eigen wijziging
+    // ook een bit per dag in de u16 op +0x4A (ma = bit 0); voor het tonen is dat niet nodig.
+    Build { id: "PE-6AF5C68F-18878000", label: "Steam 26620374 Windows", writes_tested: true, current_date: 0x58268E0, staff: 0x587B900, clubs: 0x587BA70 },
+    Build { id: "PE-6AF5C8C6-179AD000", label: "Game Pass 0.9.2524.0 Windows", writes_tested: false, current_date: 0x539DD10, staff: 0x53FAED0, clubs: 0x53FB040 },
+    // Update van 24 nov 2026 (FM 27.1.1), uit FMLibreEditor steam-26797085.toml en gamepass-0.9.2562.0.toml. Steam:
+    // lijsten en datum op dezelfde plek als 26620374, objectindeling ongewijzigd (ook volgens hen). `discover` vond
+    // op een live save precies deze drie adressen, maar de datum alleen dankzij het profiel van 26620374 hierboven.
+    // Steam Windows live getest onder Proton (26 nov 2026, Lyn-save, nov 2031): datum, club en kalender (69 weken);
+    // `set_week` voor één dag 17 dagen vooruit, teruggelezen, `undo`, daarna de hele kalender gelijk aan ervoor.
+    Build { id: "PE-6AFF57A2-1849A000", label: "Steam 26797085 Windows", writes_tested: true, current_date: 0x58268E0, staff: 0x587B900, clubs: 0x587BA70 },
+    Build { id: "PE-6AFF583B-17624000", label: "Game Pass 0.9.2562.0 Windows", writes_tested: false, current_date: 0x539BD10, staff: 0x53F8EF0, clubs: 0x53F9060 },
     // Intel-helft van de Mac-versie (Intel-Macs, of Apple silicon onder Rosetta): nooit door dit project getest
     Build { id: "0981AB31-AC3B-3D93-944F-47FE4B59CD9E", label: "Steam 26340721 macOS Intel", writes_tested: false, current_date: 0x5C69700, staff: 0x5C89210, clubs: 0x5C89380 },
     Build { id: "94CDDC80-8474-327A-85E0-E4FF95DC6893", label: "Steam 26385295 macOS Intel", writes_tested: false, current_date: 0x5CE3700, staff: 0x5D03230, clubs: 0x5D033A0 },

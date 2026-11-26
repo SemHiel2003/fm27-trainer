@@ -105,8 +105,10 @@ Step by step, with what to do when the app does not connect: **[Getting started 
 > selling, each with undo. FM27 from the Xbox app / Game Pass (0.9.2409.0, the same update) is recognised too, with
 > the same checks; it has not been live-tested on Game Pass yet. The full release of 10 November and the update of
 > 12 November (Steam 26385295 and 26577676, Game Pass 0.9.2435.0) are recognised as well. The update of 17 November
-> (Steam 26620374) is live-tested on the Mac; on Windows the app finds the lists by itself (read-only until you
-> allow changes, not tested there yet). FM on an Xbox console
+> (Steam 26620374) is live-tested on the Mac and on Windows (training with undo); Game Pass 0.9.2524.0 (the same
+> update) is recognised, read-only until you allow changes. The update of 24 November (Steam 26797085) is
+> live-tested on Windows (training with undo); Game Pass 0.9.2562.0 (the same update) is recognised, read-only until
+> you allow changes. FM's training calendar shows a change the app made after the next Continue. FM on an Xbox console
 > cannot be read: FM has to run on the same PC. After an FM patch the app keeps reading (it finds the game's lists
 > by itself) but is read-only until the new build has been checked; you can allow changes yourself in Settings
 > (back up your save first).

@@ -55,8 +55,25 @@ simulated memory for tests), `rtti.rs` (Itanium and MSVC RTTI) and `game.rs` (la
   for every club). `finance_looks_real` required 1–20 at `+0x8A9`, so every manager chain was rejected and the app
   did not connect; it now accepts either place. Balance, budgets and ticket price did not move. Live-tested on
   the Mac on 17 Nov 2026 (reads match FM's screen; budget, morale, one training day each with undo; sell and
-  understanding as dry runs). Windows and the Intel half have no profile for this update (discovery, read-only)
-  and are untested.
+  understanding as dry runs). The Intel half has no profile for this update (discovery, read-only)
+  and is untested.
+- Windows half of the 17 Nov update, statics from FMLibreEditor (`steam-26620374.toml`, `gamepass-0.9.2524.0.toml`):
+  Steam `PE-6AF5C68F-18878000` staff `0x587B900`, clubs `0x587BA70`, date `0x58268E0`; Game Pass 0.9.2524.0
+  `PE-6AF5C8C6-179AD000` staff `0x53FAED0`, clubs `0x53FB040`, date `0x539DD10`. The date now sits `0x55020` before
+  the staff pair (it was `0x564A0`), outside the ±0x400 that `discover_date` searches, so without the profile the
+  app fell back to the team's date (around the last match) and the planner started at the wrong week, writing into
+  days already past. Steam live-tested on 22 Nov 2026 (the Windows build under Proton, a save in May 2031): date
+  and calendar match FM's screen; `set_week` and undo work. FM's calendar screen keeps its own copy and shows a
+  written day only after the next Continue; FM trains from the week record. When the user edits a day in FM, FM
+  also sets a bit per day in the u16 at week record `+0x4A` (Monday = bit 0); showing the change does not need it.
+  Game Pass: not tested, read-only until allowed.
+- Update of 24 Nov 2026 (FM 27.1.1), statics from FMLibreEditor (`steam-26797085.toml`, `gamepass-0.9.2562.0.toml`):
+  Steam `PE-6AFF57A2-1849A000` staff `0x587B900`, clubs `0x587BA70`, date `0x58268E0` (the same places as 26620374;
+  the object layout did not change); Game Pass 0.9.2562.0 `PE-6AFF583B-17624000` staff `0x53F8EF0`, clubs
+  `0x53F9060`, date `0x539BD10`. On a live save `discover` found exactly the Steam addresses, the date only because
+  26620374's profile tells it where to look. Steam live-tested on 26 Nov 2026 (the Windows build under Proton, a save
+  in November 2031): date, club and the 69-week calendar read; `set_week` for one day 17 days ahead, read back,
+  `undo`, and the whole calendar was identical to before. Game Pass: not tested, read-only until allowed.
 - **Unknown build** (after a patch): `game::statics` looks the statics up itself (`discover`). In all 11 measured
   profiles the clubs pair sits `0x170` after the staff pair, so it scans the image for two pointer-list pairs at
   that distance, where the second holds clubs (name readable) and the first holds a manager whose chain
