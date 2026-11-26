@@ -496,7 +496,7 @@ pub fn plan_week(
 
     let mut notes = Vec::new();
     for (f, v) in eff.weakest().into_iter().filter(|(f, _)| !f.is_tactical_area()).take(4) {
-        if v < 50.0 {
+        if f.goodness(v) < 50.0 {
             notes.push(format!("{} ({:.0}): {}", f.label(), v, f.advice()));
         }
     }
@@ -654,5 +654,26 @@ mod tests {
         for d in 0..6 {
             assert_eq!(hard.days[d].slots, normal.days[d].slots, "alleen de dag na de wedstrijd verandert");
         }
+    }
+
+    /// Tactical Complexity telt omgekeerd: 70 (ingewikkeld, bij FM oranje) is zwak en krijgt het advies,
+    /// 20 (eenvoudig) is sterk en krijgt niets. FM's eigen getal blijft wat getoond wordt.
+    #[test]
+    fn tactical_complexity_lower_is_better() {
+        let mut eff = Effectiveness::default();
+        eff.set(Factor::ManagerialSupport, 40.0);
+        eff.set(Factor::TacticalComplexity, 70.0);
+        let weakest = eff.weakest();
+        assert_eq!(weakest[0], (Factor::TacticalComplexity, 70.0), "70 complex = 30 goed, zwakker dan 40");
+        assert_eq!(weakest[1].0, Factor::ManagerialSupport);
+        let week = CalendarWeek { start: NaiveDate::from_ymd_opt(2027, 3, 15).unwrap(), kind: WeekKind::Season, matches: [false; 7], note: String::new() };
+        let notes = |e: &Effectiveness| plan_week(&week, false, false, e, &PlannerSettings::default(), 1).notes;
+        assert!(notes(&eff).iter().any(|n| n.starts_with("Tactical Complexity (70)")), "{:?}", notes(&eff));
+
+        eff.set(Factor::TacticalComplexity, 20.0);
+        assert_eq!(eff.weakest().last().unwrap().0, Factor::TacticalComplexity, "eenvoudig = sterkst");
+        assert!(!notes(&eff).iter().any(|n| n.contains("Tactical Complexity")), "{:?}", notes(&eff));
+        assert_eq!(Factor::TacticalComplexity.goodness(20.0), 80.0);
+        assert_eq!(Factor::ManagerialSupport.goodness(20.0), 20.0);
     }
 }

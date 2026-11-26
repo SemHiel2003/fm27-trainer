@@ -5,7 +5,7 @@ use chrono::{Datelike, NaiveDate};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::model::{Component, Effectiveness, Factor, category_of, level_color, level_name};
+use crate::model::{Component, Effectiveness, Factor, category_of, level_color};
 use crate::planner::{WeekPlan, short, unique_schedules};
 
 fn day(i: usize) -> &'static str {
@@ -110,7 +110,7 @@ fn effectiveness_cards(eff: &Effectiveness) -> String {
                 f.label(),
                 v,
                 v,
-                rgb(level_color(v))
+                rgb(level_color(f.goodness(v)))
             );
         }
         h.push_str("</div>");
@@ -188,7 +188,7 @@ pub fn html_report(title: &str, eff: &Effectiveness, plans: &[WeekPlan]) -> Stri
             h,
             "<tr><td><b>{}</b><br><span class=\"note\">{} · {}</span></td><td style=\"width:60%\">{}</td></tr>",
             f.label(),
-            level_name(v),
+            f.rating_name(v),
             format!("{v:.0}"),
             esc(f.advice())
         );

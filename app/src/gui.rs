@@ -598,7 +598,7 @@ impl App {
                     ui.add_space(6.0);
                     for f in Factor::ALL.iter().filter(|f| f.component() == *c) {
                         let v = self.eff.get(*f);
-                        theme::metric_row(ui, f.label(), v, theme::rgb(level_color(v)));
+                        theme::metric_row(ui, f.label(), v, theme::rgb(level_color(f.goodness(v))));
                         if self.edit_mode {
                             let mut nv = v;
                             if ui.add(egui::Slider::new(&mut nv, 0.0..=100.0).show_value(false)).changed() && (nv - v).abs() > 0.01 {
@@ -633,7 +633,7 @@ impl App {
             for (f, v) in self.eff.weakest().into_iter().take(6) {
                 ui.horizontal(|ui| {
                     ui.add_sized(vec2(250.0, 20.0), egui::Label::new(theme::label_strong(f.label())));
-                    theme::pill(ui, &format!("{v:.0} · {}", level_name(v)), theme::rgb(level_color(v)));
+                    theme::pill(ui, &format!("{v:.0} · {}", f.rating_name(v)), theme::rgb(level_color(f.goodness(v))));
                     ui.add(egui::Label::new(theme::dim(f.advice())).wrap());
                 });
                 ui.add_space(4.0);

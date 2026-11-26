@@ -138,6 +138,33 @@ impl Factor {
         Factor::TACTICAL_AREAS.contains(&self)
     }
 
+    /// Tactical Complexity telt omgekeerd: hoe hoger, hoe ingewikkelder de tactiek en hoe slechter. FM kleurt
+    /// een volle complexiteitsmeter daarom oranje, waar een even volle meter elders groen is (op een opname
+    /// van 26 nov 2026: complexiteit 70 oranje, Managerial Support 70 limoen).
+    pub fn lower_is_better(self) -> bool {
+        matches!(self, Factor::TacticalComplexity)
+    }
+
+    /// Hoe goed een waarde is, 0 (slecht) … 100 (goed): de waarde zelf, of 100 − waarde als lager beter
+    /// is. Voor rangschikken, kleuren en drempels; getoond wordt altijd FM's eigen getal.
+    pub fn goodness(self, value: f32) -> f32 {
+        if self.lower_is_better() { 100.0 - value } else { value }
+    }
+
+    /// Woord bij een waarde: hetzelfde als `level_name` naar hoe goed hij is; bij complexiteit beschrijft het
+    /// de tactiek zelf ("laag" zou daar als "eenvoudig" gelezen worden).
+    pub fn rating_name(self, value: f32) -> &'static str {
+        if self.lower_is_better() {
+            match value {
+                v if v >= 55.0 => crate::t!("complex", "complex"),
+                v if v >= 35.0 => crate::t!("gemiddeld", "moderate"),
+                _ => crate::t!("eenvoudig", "simple"),
+            }
+        } else {
+            level_name(value)
+        }
+    }
+
     pub fn phase(self) -> Option<Phase> {
         use Factor::*;
         match self {
@@ -394,14 +421,14 @@ impl Effectiveness {
             return *v;
         }
         let vals: Vec<f32> =
-            Factor::ALL.iter().filter(|f| f.component() == c).map(|f| self.get(*f)).collect();
+            Factor::ALL.iter().filter(|f| f.component() == c).map(|f| f.goodness(self.get(*f))).collect();
         vals.iter().sum::<f32>() / vals.len().max(1) as f32
     }
 
-    /// Factors gesorteerd van zwak naar sterk.
+    /// Factors gesorteerd van zwak naar sterk (naar `Factor::goodness`), met FM's eigen waarde erbij.
     pub fn weakest(&self) -> Vec<(Factor, f32)> {
         let mut v: Vec<(Factor, f32)> = Factor::ALL.iter().map(|f| (*f, self.get(*f))).collect();
-        v.sort_by(|a, b| a.1.total_cmp(&b.1));
+        v.sort_by(|a, b| a.0.goodness(a.1).total_cmp(&b.0.goodness(b.1)));
         v
     }
 
